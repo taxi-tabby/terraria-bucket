@@ -110,40 +110,65 @@ expected="world=$TMP_WORLD_DIR/othername.wld
 autocreate=2"
 assert_eq "$expected" "$output" "mismatched name -> world= + autocreate"
 
-# ----- seed_mods_from_preload tests -----
-TMP_PRELOAD_DIR=$(mktemp -d)
-TMP_TARGET_MODS=$(mktemp -d)
-trap 'rm -rf "$TMP_WORLD_DIR" "${TMP_PRELOAD_DIR:-}" "${TMP_TARGET_MODS:-}"' EXIT
+# ----- sync_mods_from_manifest / write_enabled_json tests -----
+# These exercise jq-backed logic; skip locally if jq isn't installed.
+TMP_MANIFEST_PRELOAD=$(mktemp -d)
+TMP_MANIFEST_MODS=$(mktemp -d)
+trap 'rm -rf "$TMP_WORLD_DIR" "${TMP_MANIFEST_PRELOAD:-}" "${TMP_MANIFEST_MODS:-}"' EXIT
 
-mkdir -p "$TMP_PRELOAD_DIR/Mods"
-echo "fake-tmod-content-a" > "$TMP_PRELOAD_DIR/Mods/LocalModA.tmod"
-echo "fake-tmod-content-b" > "$TMP_PRELOAD_DIR/Mods/LocalModB.tmod"
-echo "[\"LocalModA\"]" > "$TMP_PRELOAD_DIR/Mods/enabled.json"
+if command -v jq > /dev/null; then
+    # Fixture mod file with manifest matching its sha — exercises the
+    # idempotent path (no download).
+    echo "fixture-mod-content" > "$TMP_MANIFEST_MODS/FixtureMod.tmod"
+    fixture_sha=$(sha256sum "$TMP_MANIFEST_MODS/FixtureMod.tmod" | cut -d' ' -f1)
+    cat > "$TMP_MANIFEST_PRELOAD/mods.json" <<EOF
+{
+  "release_base_url": "https://example.com/test",
+  "mods": [
+    { "name": "FixtureMod", "sha256": "$fixture_sha" }
+  ]
+}
+EOF
 
-echo "Test: seed_mods_from_preload copies all files when target empty"
-PRELOAD_DIR="$TMP_PRELOAD_DIR" MODS_DIR="$TMP_TARGET_MODS" \
-    seed_mods_from_preload > /dev/null
-[[ -f "$TMP_TARGET_MODS/LocalModA.tmod" ]]; assert_eq "0" "$?" "LocalModA copied"
-[[ -f "$TMP_TARGET_MODS/LocalModB.tmod" ]]; assert_eq "0" "$?" "LocalModB copied"
-[[ -f "$TMP_TARGET_MODS/enabled.json" ]]; assert_eq "0" "$?" "enabled.json copied"
+    echo "Test: sync_mods_from_manifest skips when sha matches"
+    output=$(PRELOAD_DIR="$TMP_MANIFEST_PRELOAD" MODS_DIR="$TMP_MANIFEST_MODS" \
+             sync_mods_from_manifest 2>&1)
+    assert_contains "$output" "up to date" "skip download when sha matches"
 
-echo "Test: seed_mods_from_preload does not overwrite existing files"
-echo "user-modified" > "$TMP_TARGET_MODS/LocalModA.tmod"
-PRELOAD_DIR="$TMP_PRELOAD_DIR" MODS_DIR="$TMP_TARGET_MODS" \
-    seed_mods_from_preload > /dev/null
-content=$(cat "$TMP_TARGET_MODS/LocalModA.tmod")
-assert_eq "user-modified" "$content" "existing file preserved"
+    echo "Test: sync_mods_from_manifest aborts when manifest missing"
+    ( PRELOAD_DIR="/nonexistent/path" MODS_DIR="$TMP_MANIFEST_MODS" \
+      sync_mods_from_manifest 2>/dev/null ); rc=$?
+    assert_eq "1" "$rc" "exits 1 when manifest missing"
 
-echo "Test: seed_mods_from_preload no-op when preload dir missing"
-PRELOAD_DIR="/nonexistent/path" MODS_DIR="$TMP_TARGET_MODS" \
-    seed_mods_from_preload
-rc=$?
-assert_eq "0" "$rc" "missing preload returns 0"
+    echo "Test: write_enabled_json renders array of names from manifest"
+    PRELOAD_DIR="$TMP_MANIFEST_PRELOAD" MODS_DIR="$TMP_MANIFEST_MODS" \
+        write_enabled_json > /dev/null
+    names=$(jq -r '.[]' "$TMP_MANIFEST_MODS/enabled.json" | tr '\n' ',')
+    assert_eq "FixtureMod," "$names" "enabled.json contains only manifest names"
+
+    echo "Test: write_enabled_json overwrites stale enabled.json"
+    echo '[]' > "$TMP_MANIFEST_MODS/enabled.json"
+    cat > "$TMP_MANIFEST_PRELOAD/mods.json" <<EOF
+{
+  "release_base_url": "https://example.com/test",
+  "mods": [
+    { "name": "ModOne", "sha256": "aaa" },
+    { "name": "ModTwo", "sha256": "bbb" }
+  ]
+}
+EOF
+    PRELOAD_DIR="$TMP_MANIFEST_PRELOAD" MODS_DIR="$TMP_MANIFEST_MODS" \
+        write_enabled_json > /dev/null
+    names=$(jq -r '.[]' "$TMP_MANIFEST_MODS/enabled.json" | tr '\n' ',')
+    assert_eq "ModOne,ModTwo," "$names" "stale enabled.json fully replaced"
+else
+    echo "Skip: sync_mods_from_manifest / write_enabled_json (jq not installed)"
+fi
 
 # ----- seed_world_from_preload tests -----
 TMP_SEED_PRELOAD=$(mktemp -d)
 TMP_SEED_WORLDS=$(mktemp -d)
-trap 'rm -rf "$TMP_WORLD_DIR" "${TMP_PRELOAD_DIR:-}" "${TMP_TARGET_MODS:-}" "${TMP_SEED_PRELOAD:-}" "${TMP_SEED_WORLDS:-}"' EXIT
+trap 'rm -rf "$TMP_WORLD_DIR" "${TMP_MANIFEST_PRELOAD:-}" "${TMP_MANIFEST_MODS:-}" "${TMP_SEED_PRELOAD:-}" "${TMP_SEED_WORLDS:-}"' EXIT
 
 echo "Test: seed_world_from_preload skips when .wld already exists"
 touch "$TMP_SEED_WORLDS/existing.wld"

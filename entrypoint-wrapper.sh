@@ -3,15 +3,11 @@
 #
 # - Generates serverconfig.txt from environment variables on each start.
 # - Seeds an initial world from preload/Map/Terraria.zip on first run.
-# - Seeds bundled mod files from preload/Mods/ on first run.
+# - Syncs mods against /preload/mods.json (single source of truth):
+#     downloads missing/changed .tmod files from GitHub Releases,
+#     verifies sha256, and rewrites enabled.json from the manifest.
 # - Verifies the tModLoader binary is present; reinstalls if not.
-# - Execs the tModLoader server directly (bypassing the official manage
-#   script's start command, which is_in_docker would re-invoke SteamCMD
-#   on every launch and break in Railway's volume environment).
-#
-# All mods (workshop + local) ship inside the image at /preload/Mods/.
-# We do NOT use SteamCMD at runtime — its workshop_download_item flow is
-# flaky across Railway's image-layer/volume filesystem boundary.
+# - Execs the tModLoader server directly.
 
 set -euo pipefail
 
@@ -185,66 +181,96 @@ seed_world_from_preload() {
     fi
 }
 
-seed_mods_from_preload() {
-    # Copy bundled mod files from the image's preload directory into the volume.
-    # Only files that don't already exist at the target are copied — user-modified
-    # files in the volume are preserved.
-    local src="${PRELOAD_DIR}/Mods"
-    if [[ ! -d "$src" ]]; then
-        echo "[entrypoint] no preload at $src; skipping seed"
-        return 0
+sync_mods_from_manifest() {
+    # Reconcile $MODS_DIR with /preload/mods.json on every start.
+    #
+    # The manifest is the single source of truth: each entry has {name, sha256}.
+    # The URL is derived as <release_base_url>/<name>.tmod. For each mod, the
+    # existing file is kept iff its sha256 matches; otherwise it is downloaded
+    # to a .partial path and atomically renamed only after verification.
+    #
+    # Idempotent: re-runs are cheap (sha256 check, no network if all match).
+    local manifest="${PRELOAD_DIR}/mods.json"
+    if [[ ! -f "$manifest" ]]; then
+        echo "[entrypoint] FATAL: $manifest missing — image is broken" >&2
+        exit 1
     fi
 
-    local copied=0 skipped=0
-    shopt -s nullglob
-    for file in "$src"/*; do
-        local name
-        name=$(basename "$file")
-        local dest="$MODS_DIR/$name"
-        if [[ -e "$dest" ]]; then
-            skipped=$((skipped + 1))
-        else
-            cp "$file" "$dest"
-            copied=$((copied + 1))
+    local base_url count
+    base_url=$(jq -r '.release_base_url' "$manifest")
+    count=$(jq -r '.mods | length' "$manifest")
+    if [[ -z "$base_url" || "$base_url" == "null" ]]; then
+        echo "[entrypoint] FATAL: mods.json missing release_base_url" >&2
+        exit 1
+    fi
+
+    echo "[entrypoint] syncing $count mods from $base_url"
+
+    local i name expected_sha actual_sha dest url tmp
+    for ((i = 0; i < count; i++)); do
+        name=$(jq -r ".mods[$i].name" "$manifest")
+        expected_sha=$(jq -r ".mods[$i].sha256" "$manifest")
+        # Validate trusted-but-still-checked manifest fields: a missing/null
+        # value would silently corrupt downloads; a name with slashes or ".."
+        # would let the URL path escape MODS_DIR.
+        if [[ -z "$name" || "$name" == "null" || -z "$expected_sha" || "$expected_sha" == "null" ]]; then
+            echo "[entrypoint] FATAL: mods[$i] missing name or sha256 in $manifest" >&2
+            exit 1
         fi
+        if [[ "$name" == */* || "$name" == *..* ]]; then
+            echo "[entrypoint] FATAL: invalid mod name in manifest: '$name'" >&2
+            exit 1
+        fi
+        dest="${MODS_DIR}/${name}.tmod"
+        url="${base_url}/${name}.tmod"
+
+        if [[ -f "$dest" ]]; then
+            actual_sha=$(sha256sum "$dest" | cut -d' ' -f1)
+            if [[ "$actual_sha" == "$expected_sha" ]]; then
+                echo "[entrypoint]   ${name}: up to date"
+                continue
+            fi
+            echo "[entrypoint]   ${name}: sha256 mismatch; redownloading"
+        else
+            echo "[entrypoint]   ${name}: missing; downloading"
+        fi
+
+        tmp="${dest}.partial"
+        if ! curl -fL --retry 3 --retry-delay 5 -o "$tmp" "$url"; then
+            echo "[entrypoint] FATAL: download failed for ${name} from ${url}" >&2
+            rm -f "$tmp"
+            exit 1
+        fi
+        actual_sha=$(sha256sum "$tmp" | cut -d' ' -f1)
+        if [[ "$actual_sha" != "$expected_sha" ]]; then
+            echo "[entrypoint] FATAL: ${name} sha256 mismatch after download" >&2
+            echo "[entrypoint]   expected: $expected_sha" >&2
+            echo "[entrypoint]   actual:   $actual_sha" >&2
+            rm -f "$tmp"
+            exit 1
+        fi
+        mv "$tmp" "$dest"
     done
-    shopt -u nullglob
-    echo "[entrypoint] preload seed: $copied copied, $skipped already present"
 }
 
-cleanup_legacy_steamcmd_state() {
-    # Earlier versions of this script tried to use SteamCMD at runtime to
-    # download workshop mods, with several symlink schemes between the image
-    # layer and the Railway volume. All of them caused different failures
-    # ("I/O Operation Failed", lost workshop content on redeploy, etc.).
-    # We now bundle all .tmod files inside /preload/Mods at build time and
-    # never invoke SteamCMD. Clean up any leftover state from those attempts
-    # so it doesn't confuse anything.
-    if [[ -L "/home/tml/Steam/steamapps" ]]; then
-        echo "[entrypoint] removing legacy /home/tml/Steam/steamapps symlink"
-        rm "/home/tml/Steam/steamapps"
-    fi
-    if [[ -L "$TML_FOLDER/steamapps/workshop" ]]; then
-        echo "[entrypoint] removing legacy $TML_FOLDER/steamapps/workshop symlink"
-        rm "$TML_FOLDER/steamapps/workshop"
-    fi
-    if [[ -f "$MODS_DIR/.install-hash" ]]; then
-        echo "[entrypoint] removing obsolete $MODS_DIR/.install-hash"
-        rm "$MODS_DIR/.install-hash"
-    fi
-    if [[ -f "$MODS_DIR/install.txt" ]]; then
-        echo "[entrypoint] removing obsolete $MODS_DIR/install.txt (workshop mods are bundled now)"
-        rm "$MODS_DIR/install.txt"
-    fi
+write_enabled_json() {
+    # enabled.json is derived from the manifest and always rewritten on start.
+    # tModLoader sometimes regenerates this file with an empty list during
+    # server bootstrap; overwriting it post-sync guarantees the server loads
+    # the exact mod set in the manifest, with no stale-volume failure modes.
+    local manifest="${PRELOAD_DIR}/mods.json"
+    local target="${MODS_DIR}/enabled.json"
+    jq '[.mods[].name]' "$manifest" > "$target"
+    echo "[entrypoint] wrote $target ($(jq length "$target") mods enabled)"
 }
 
 main() {
     echo "[entrypoint] preparing tModLoader server in $TML_FOLDER"
     ensure_directories
     ensure_tmodloader_installed
-    cleanup_legacy_steamcmd_state
     seed_world_from_preload
-    seed_mods_from_preload
+    sync_mods_from_manifest
+    write_enabled_json
 
     local world_clause
     world_clause=$(determine_world_clause)

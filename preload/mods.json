@@ -1,0 +1,61 @@
+{
+  "release_base_url": "https://github.com/taxi-tabby/terraria-bucket/releases/download/mods-v1",
+  "mods": [
+    {
+      "name": "AutoReroll",
+      "sha256": "08d6b349b8a0746369b4dfd7beb0f196f8ec55b0a3038aa980879c125b1c6a77"
+    },
+    {
+      "name": "BankButtons",
+      "sha256": "c45aa14a002f7061d5b139d257a7dd85b49c6834946baddb4b076b92de81aded"
+    },
+    {
+      "name": "BossChecklist",
+      "sha256": "2fa4bb4240c969b5bb3d8e8354e0ce27e5595c2401e8008f4c6152dbac07b92d"
+    },
+    {
+      "name": "CalamiTyKRT",
+      "sha256": "f6fb3695380f94d23e95da9068d23be5a129efcefdf60cd7ccc71a72d731345f"
+    },
+    {
+      "name": "CalamityMod",
+      "sha256": "954db0b1445d3ba5bce20b63241b63360e2e0a38ba86194bcb5a28e454e6ef7a"
+    },
+    {
+      "name": "CalamityModMusic",
+      "sha256": "ca202bc18ae690d5ea7267b42c9ec8162241a19aafc9efdf40eff0a59eada9e5"
+    },
+    {
+      "name": "DisableCorruptionSpread",
+      "sha256": "69c5afbc67340abe9e35cf0c06044f3dc534763ec4c09052f6a93a58a33103b3"
+    },
+    {
+      "name": "MagicRecipeIntegrator",
+      "sha256": "7e56c33e0972226b5c029cf9e40d2d8afa7ce477ad1daf7fa1a1d0b022ba878d"
+    },
+    {
+      "name": "MagicStorage",
+      "sha256": "58b382ec0f9845f5430e5f4746642cb938a482dfacb3b62eac79b932fb6b959f"
+    },
+    {
+      "name": "RecipeBrowser",
+      "sha256": "5f4426d943e41d562b8a7a869387d935263d438714c307c54525ed46ecf3bfed"
+    },
+    {
+      "name": "SerousCommonLib",
+      "sha256": "3a55aeef1828cc369e8a4d3c087562d815e664c7e88e40cd5fe42c1c073d3a26"
+    },
+    {
+      "name": "SharedMap",
+      "sha256": "a87445e6d6ebefe419f80ed1d2d822ce24371f5ed705bde2df3a3bd712f3129d"
+    },
+    {
+      "name": "WeaponDisplay",
+      "sha256": "c9679dbf8377fb168b90744e7eeb659e1aad5feaf3e16dbd158210ed3af962e3"
+    },
+    {
+      "name": "tmodkor1449",
+      "sha256": "a5d9b65d62c0066dc75c2835ece4232e0d291962401b5defa2d42865b139d1a7"
+    }
+  ]
+}
