@@ -72,11 +72,28 @@ docker exec -it tml execute "exit-nosave"
 
 ## 월드 관리
 
-- **자동 생성**: `tModLoader/Worlds/` 폴더가 비어 있으면 `.env`의 `WORLD_*` 설정으로
-  새 월드를 자동 생성합니다.
-- **기존 월드 사용**: `Worlds/` 폴더에 `WORLD_NAME.wld` 파일을 두면 그 월드가
-  로드됩니다. 자동 생성은 일어나지 않습니다.
-- 단일 플레이어에서 만든 월드 파일도 그대로 사용 가능합니다.
+서버 시작 시 다음 우선순위로 월드가 결정됩니다:
+
+| 순위 | 조건 | 동작 |
+|---|---|---|
+| 1 | `tModLoader/Worlds/` 에 `.wld` 파일 존재 | 그 월드를 로드 (`.env`의 `WORLD_*` 무시) |
+| 2 | `preload/Map/Terraria.zip` 존재 | 압축 풀어서 첫 시작 시 시드 (`WORLD_NAME` 자동 갱신) |
+| 3 | 위 둘 다 없음 | `.env`의 `WORLD_NAME`/`WORLD_SIZE`/`WORLD_DIFFICULTY`/`WORLD_SEED`로 새 월드 자동 생성 |
+
+**핵심**: `WORLD_SIZE`, `WORLD_DIFFICULTY`, `WORLD_SEED`는 **autocreate (순위 3)에서만** 사용됩니다.
+이미 월드 파일이 있으면 이 설정은 무시되며, 월드 자체에 저장된 속성이 유지됩니다.
+
+### 기존 월드 가져오기
+
+방법 1 — **`.wld` 파일을 직접 볼륨에 복사**:
+```bash
+scp myworld.wld user@server:/path/to/tModLoader/Worlds/
+```
+
+방법 2 — **`preload/Map/Terraria.zip` 사용 (Railway 첫 배포용)**:
+- tModLoader 클라이언트의 save 폴더를 zip으로 묶거나, `.wld` + `.twld`를 직접 zip
+- git에 커밋 → 배포 시 자동 추출
+- 재배포 시 볼륨에 이미 월드 있으면 덮어쓰지 않음 (진행 상황 보존)
 
 ### 백업
 
