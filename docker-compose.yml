@@ -9,7 +9,8 @@ services:
         UID: ${UID:-1000}
         GID: ${GID:-1000}
     env_file:
-      - .env
+      - path: .env
+        required: false
     ports:
       - "${SERVER_PORT:-7777}:7777"
     tty: true
