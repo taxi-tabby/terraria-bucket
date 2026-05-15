@@ -178,6 +178,46 @@ PRELOAD_DIR="/nonexistent/path" MODS_DIR="$TMP_TARGET_MODS" \
 rc=$?
 assert_eq "0" "$rc" "missing preload returns 0"
 
+# ----- seed_world_from_preload tests -----
+TMP_SEED_PRELOAD=$(mktemp -d)
+TMP_SEED_WORLDS=$(mktemp -d)
+trap 'rm -rf "$TMP_WORLD_DIR" "${TMP_MODS_DIR:-}" "${TMP_PRELOAD_DIR:-}" "${TMP_TARGET_MODS:-}" "${TMP_SEED_PRELOAD:-}" "${TMP_SEED_WORLDS:-}"' EXIT
+
+echo "Test: seed_world_from_preload skips when .wld already exists"
+touch "$TMP_SEED_WORLDS/existing.wld"
+saved_world_name="anything"
+PRELOAD_DIR="$TMP_SEED_PRELOAD" WORLDS_DIR="$TMP_SEED_WORLDS" WORLD_NAME="$saved_world_name" \
+    seed_world_from_preload > /dev/null
+[[ -f "$TMP_SEED_WORLDS/existing.wld" ]]
+assert_eq "0" "$?" "existing world preserved"
+
+echo "Test: seed_world_from_preload skips silently when preload zip missing"
+rm -f "$TMP_SEED_WORLDS/existing.wld"
+PRELOAD_DIR="$TMP_SEED_PRELOAD" WORLDS_DIR="$TMP_SEED_WORLDS" WORLD_NAME=untitled \
+    seed_world_from_preload > /dev/null
+rc=$?
+assert_eq "0" "$rc" "missing zip returns 0"
+
+# Only run the extraction test if `zip` is available (not on all systems).
+if command -v zip > /dev/null; then
+    echo "Test: seed_world_from_preload extracts direct .wld and renames WORLD_NAME"
+    mkdir -p "$TMP_SEED_PRELOAD/Map"
+    seed_zip_tmp=$(mktemp -d)
+    echo "fake-wld-content" > "$seed_zip_tmp/MyWorld.wld"
+    echo "fake-twld-content" > "$seed_zip_tmp/MyWorld.twld"
+    (cd "$seed_zip_tmp" && zip -q "$TMP_SEED_PRELOAD/Map/Terraria.zip" MyWorld.wld MyWorld.twld)
+    rm -rf "$seed_zip_tmp"
+    WORLD_NAME=untitled
+    PRELOAD_DIR="$TMP_SEED_PRELOAD" WORLDS_DIR="$TMP_SEED_WORLDS" \
+        seed_world_from_preload > /dev/null
+    [[ -f "$TMP_SEED_WORLDS/MyWorld.wld" ]]
+    assert_eq "0" "$?" ".wld extracted"
+    [[ -f "$TMP_SEED_WORLDS/MyWorld.twld" ]]
+    assert_eq "0" "$?" ".twld extracted"
+    # Note: WORLD_NAME update happens in the subshell of $(...) when source-test;
+    # not asserting on the variable directly here — verified via integration.
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

@@ -133,6 +133,79 @@ ensure_tmodloader_installed() {
     echo "[entrypoint] install-tml complete"
 }
 
+seed_world_from_preload() {
+    # Extract preload/Map/Terraria.zip into $WORLDS_DIR on first start so users
+    # can ship a starter world with the deployment. NEVER overwrites: if any
+    # .wld is already present in the volume, leave it alone.
+    #
+    # Supports two zip layouts:
+    #   1. Direct .wld (and matching .twld) files at any depth in the zip.
+    #   2. A tModLoader save-folder dump where the actual world only exists
+    #      inside dated cloud-backup zips at tModLoader/Worlds/Backups/*.zip.
+    #      In that case the newest backup is extracted and used.
+    #
+    # If the seeded world name differs from WORLD_NAME (e.g. backup was named
+    # "Inferior_Touch_of_Power" but WORLD_NAME=untitled), updates WORLD_NAME in
+    # this shell so determine_world_clause loads the seeded world.
+    if find "$WORLDS_DIR" -maxdepth 1 -name "*.wld" -print -quit 2>/dev/null | grep -q .; then
+        echo "[entrypoint] world already present in $WORLDS_DIR; preserving (no seed)"
+        return 0
+    fi
+
+    local zip="${PRELOAD_DIR}/Map/Terraria.zip"
+    if [[ ! -f "$zip" ]]; then
+        echo "[entrypoint] no preload world zip at $zip; skipping world seed"
+        return 0
+    fi
+
+    echo "[entrypoint] no existing world; seeding from $zip..."
+    local tmp
+    tmp=$(mktemp -d)
+    # shellcheck disable=SC2064 — expand $tmp now, not at trap time
+    trap "rm -rf '$tmp'" RETURN
+
+    if ! unzip -q "$zip" -d "$tmp"; then
+        echo "[entrypoint] WARNING: failed to extract $zip" >&2
+        return 0
+    fi
+
+    # Strategy 1: direct .wld files (excluding *.bak* backups) anywhere in tree.
+    local wld
+    wld=$(find "$tmp" -name "*.wld" -not -name "*.bak*" -type f 2>/dev/null | head -1)
+
+    # Strategy 2: extract the newest cloud-backup zip and look inside.
+    if [[ -z "$wld" ]]; then
+        local backup
+        backup=$(find "$tmp" -name "*-cloud.zip" -type f 2>/dev/null | sort | tail -1)
+        if [[ -n "$backup" ]]; then
+            echo "[entrypoint] no direct .wld in outer zip; extracting backup $(basename "$backup")"
+            mkdir -p "$tmp/_backup"
+            unzip -q -o "$backup" -d "$tmp/_backup"
+            wld=$(find "$tmp/_backup" -name "*.wld" -type f 2>/dev/null | head -1)
+        fi
+    fi
+
+    if [[ -z "$wld" ]]; then
+        echo "[entrypoint] WARNING: no .wld file found in $zip; not seeding" >&2
+        return 0
+    fi
+
+    cp "$wld" "$WORLDS_DIR/"
+    local twld="${wld%.wld}.twld"
+    if [[ -f "$twld" ]]; then
+        cp "$twld" "$WORLDS_DIR/"
+    fi
+
+    local seeded_name
+    seeded_name=$(basename "$wld" .wld)
+    echo "[entrypoint] seeded world '$seeded_name' into $WORLDS_DIR"
+
+    if [[ "$seeded_name" != "$WORLD_NAME" ]]; then
+        echo "[entrypoint] updating WORLD_NAME: '$WORLD_NAME' -> '$seeded_name' (matching seeded world)"
+        WORLD_NAME="$seeded_name"
+    fi
+}
+
 seed_mods_from_preload() {
     # Copy bundled mod files from the image's preload directory into the volume.
     # Only files that don't already exist at the target are copied — user-modified
@@ -212,6 +285,7 @@ main() {
     echo "[entrypoint] preparing tModLoader server in $TML_FOLDER"
     ensure_directories
     ensure_tmodloader_installed
+    seed_world_from_preload
     seed_mods_from_preload
 
     local world_clause
