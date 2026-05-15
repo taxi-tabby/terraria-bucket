@@ -64,38 +64,40 @@ RUN ISDOCKER=1 ./manage-tModLoaderServer.sh install-tml --github
 COPY --chown=tml:tml --chmod=0755 entrypoint-wrapper.sh /home/tml/entrypoint-wrapper.sh
 
 # Bundled mod files seeded into the volume on first run (see seed_mods_from_preload).
-# preload/Mods/ contains 12 .tmod files that fit under GitHub's 100MB-per-file
-# limit (regular git blobs, no LFS).
+# preload/Mods/ contains all 14 .tmod files:
+#   - 12 files are stored as regular git blobs (each <100MB).
+#   - 2 large files (CalamityMod ~110MB, CalamityModMusic ~180MB) are tracked
+#     via Git LFS because they exceed GitHub's 100MB-per-file limit.
+#
+# Railway's git clone doesn't pull LFS objects, so the build context arrives
+# with ~130-byte LFS pointer text files instead of the real binaries for the
+# two LFS-tracked mods. After COPY, fetch the real content from GitHub's
+# media endpoint (which serves the LFS-resolved binary directly, with no
+# auth needed since the repo is public).
 COPY --chown=tml:tml preload /preload
 
-# The two largest workshop mods exceed GitHub's 100MB-per-file limit:
-#   - CalamityMod.tmod (~110MB)
-#   - CalamityModMusic.tmod (~180MB)
-# They cannot live in the git repo, so fetch them at build time from URLs
-# the user provides via Railway service variables (which Railway exposes as
-# Docker build args). If a URL isn't set the mod just won't be bundled.
-#
-# To set up: upload the files anywhere with a stable public URL (GitHub
-# Releases on a public repo works well, no auth needed), then set
-# CALAMITY_MOD_URL and CALAMITY_MUSIC_URL in Railway's Variables tab.
-ARG CALAMITY_MOD_URL=""
-ARG CALAMITY_MUSIC_URL=""
-RUN if [ -n "$CALAMITY_MOD_URL" ]; then \
-        echo "[build] fetching CalamityMod.tmod from $CALAMITY_MOD_URL..."; \
-        curl -fL --retry 3 "$CALAMITY_MOD_URL" -o /preload/Mods/CalamityMod.tmod \
-            && [ "$(head -c 4 /preload/Mods/CalamityMod.tmod)" = "TMOD" ] \
-            || { echo "[build] ERROR: CalamityMod.tmod download invalid"; rm -f /preload/Mods/CalamityMod.tmod; exit 1; }; \
-    else \
-        echo "[build] CALAMITY_MOD_URL not set; CalamityMod will NOT be bundled" >&2; \
-    fi && \
-    if [ -n "$CALAMITY_MUSIC_URL" ]; then \
-        echo "[build] fetching CalamityModMusic.tmod from $CALAMITY_MUSIC_URL..."; \
-        curl -fL --retry 3 "$CALAMITY_MUSIC_URL" -o /preload/Mods/CalamityModMusic.tmod \
-            && [ "$(head -c 4 /preload/Mods/CalamityModMusic.tmod)" = "TMOD" ] \
-            || { echo "[build] ERROR: CalamityModMusic.tmod download invalid"; rm -f /preload/Mods/CalamityModMusic.tmod; exit 1; }; \
-    else \
-        echo "[build] CALAMITY_MUSIC_URL not set; CalamityModMusic will NOT be bundled" >&2; \
-    fi
+# Repo-specific URL prefix. Override with --build-arg if you fork this repo.
+ARG GH_LFS_BASE="https://media.githubusercontent.com/media/taxi-tabby/terraria-bucket/main"
+
+RUN echo "[build] fetching LFS-tracked mods from GitHub media endpoint..." \
+    && curl -fL --retry 3 \
+        "$GH_LFS_BASE/preload/Mods/CalamityMod.tmod" \
+        -o /preload/Mods/CalamityMod.tmod \
+    && curl -fL --retry 3 \
+        "$GH_LFS_BASE/preload/Mods/CalamityModMusic.tmod" \
+        -o /preload/Mods/CalamityModMusic.tmod \
+    && echo "[build] verifying all 14 .tmod files are real binaries..." \
+    && for f in /preload/Mods/*.tmod; do \
+         hdr=$(head -c 4 "$f"); \
+         if [ "$hdr" != "TMOD" ]; then \
+             echo "[build] FATAL: $f is not a real .tmod (header=$hdr, $(wc -c <"$f") bytes)"; \
+             echo "[build]   For files outside LFS this means the git blob is wrong."; \
+             echo "[build]   For LFS-tracked files this means the media URL fetch failed or"; \
+             echo "[build]   the LFS object isn't on GitHub yet — push the LFS objects first."; \
+             exit 1; \
+         fi; \
+       done \
+    && echo "[build] all 14 .tmod files have valid TMOD headers"
 
 EXPOSE 7777
 
