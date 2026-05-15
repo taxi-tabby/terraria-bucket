@@ -76,8 +76,47 @@ record_mod_hash() {
     sha256sum "$install_file" | awk '{print $1}' > "$MOD_HASH_FILE"
 }
 
-# Skip running main() when sourced for testing.
+ensure_directories() {
+    mkdir -p "$MODS_DIR" "$WORLDS_DIR" "$LOGS_DIR"
+}
+
+install_mods_if_needed() {
+    if mods_need_install; then
+        echo "[entrypoint] install.txt changed - downloading workshop mods..."
+        if "$HOME/manage-tModLoaderServer.sh" install-mods --folder "$TML_FOLDER"; then
+            record_mod_hash
+            echo "[entrypoint] mod install complete"
+        else
+            echo "[entrypoint] WARNING: mod install failed; starting server anyway" >&2
+        fi
+    else
+        echo "[entrypoint] mods up to date; skipping install"
+    fi
+}
+
+main() {
+    echo "[entrypoint] preparing tModLoader server in $TML_FOLDER"
+    ensure_directories
+
+    local world_clause
+    world_clause=$(determine_world_clause)
+    echo "[entrypoint] world clause: $world_clause"
+
+    generate_serverconfig "$world_clause" > "$SERVERCONFIG"
+    echo "[entrypoint] wrote $SERVERCONFIG"
+
+    install_mods_if_needed
+
+    echo "[entrypoint] starting tModLoader server"
+    exec "$HOME/manage-tModLoaderServer.sh" start \
+         --folder "$TML_FOLDER" \
+         --config "$SERVERCONFIG"
+}
+
+# Skip main() when sourced for testing.
 if [[ "${TML_WRAPPER_TEST_MODE:-0}" == "1" ]]; then
-    set +e  # prevent errexit from propagating into the test shell
+    set +e
     return 0 2>/dev/null || true
 fi
+
+main "$@"
