@@ -311,10 +311,63 @@ sync_workshop_to_volume() {
     echo "[entrypoint] workshop in volume: $(du -sh "$dest" 2>/dev/null | cut -f1)"
 }
 
+install_workshop_mods_directly() {
+    # We invoke SteamCMD ourselves instead of going through the manage script's
+    # install-mods command. The manage script does `pushd Mods` (= cwd in the
+    # Railway volume) before running SteamCMD with `+force_install_dir $folder`,
+    # which causes SteamCMD's internal atomic-rename ops to cross the image-
+    # layer / volume filesystem boundary and fail with "I/O Operation Failed"
+    # on every workshop item. Running SteamCMD with cwd in /home/tml keeps
+    # all its operations on a single filesystem.
+    local install_file="${MODS_DIR}/install.txt"
+    [[ -f "$install_file" ]] || { echo "[entrypoint] no install.txt; nothing to install"; return 0; }
+
+    # Parse workshop IDs (one per line, ignore blanks and comments)
+    local ids=()
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"            # strip CR (in case file has CRLF)
+        line="${line//[[:space:]]/}"    # strip all whitespace
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        ids+=("$line")
+    done < "$install_file"
+
+    if [[ ${#ids[@]} -eq 0 ]]; then
+        echo "[entrypoint] install.txt has no workshop IDs"
+        return 0
+    fi
+
+    echo "[entrypoint] downloading ${#ids[@]} workshop item(s) via direct SteamCMD..."
+
+    # Pre-create SteamCMD's expected dirs so it doesn't fail on missing parents.
+    mkdir -p /home/tml/Steam/steamapps/workshop/content
+    mkdir -p /home/tml/Steam/steamapps/workshop/downloads
+
+    local args=("+force_install_dir" "/home/tml/Steam" "+login" "anonymous")
+    local id
+    for id in "${ids[@]}"; do
+        args+=("+workshop_download_item" "1281930" "$id")
+    done
+    args+=("+quit")
+
+    local rc=0
+    ( cd /home/tml && /home/tml/.bin/steamcmd "${args[@]}" ) || rc=$?
+
+    if [[ $rc -ne 0 ]]; then
+        echo "[entrypoint] SteamCMD exited with code $rc" >&2
+        if [[ -f /home/tml/Steam/logs/stderr.txt ]]; then
+            echo "[entrypoint] last lines of /home/tml/Steam/logs/stderr.txt:" >&2
+            tail -30 /home/tml/Steam/logs/stderr.txt >&2 || true
+        fi
+        return 1
+    fi
+    return 0
+}
+
 install_mods_if_needed() {
     if mods_need_install; then
         echo "[entrypoint] install.txt changed - downloading workshop mods..."
-        if "$HOME/manage-tModLoaderServer.sh" install-mods --folder "$TML_FOLDER"; then
+        if install_workshop_mods_directly; then
             record_mod_hash
             echo "[entrypoint] mod install complete"
         else
@@ -349,12 +402,23 @@ main() {
     install_mods_if_needed
     sync_workshop_to_volume
 
+    # Bypass the manage script's `start` command. Its is_in_docker branch would
+    # re-invoke install_workshop_mods with the broken cross-filesystem cwd, AND
+    # try to redirect to a non-existent log file. Run ScriptCaller.sh directly
+    # — that's what the manage script ultimately exec's anyway.
+    local server_dir="$HOME/server"
+    cd "$server_dir" || { echo "[entrypoint] FATAL: $server_dir missing" >&2; exit 1; }
+
+    # The manage script applies these two tweaks to ScriptCaller.sh before
+    # sourcing it; replicate them here.
+    sed -i 's|cd "$(dirname "$0")"|cd "$(dirname "${BASH_SOURCE[0]}")"|' ./LaunchUtils/ScriptCaller.sh
+    chmod +x ./LaunchUtils/ScriptCaller.sh
+
     echo "[entrypoint] starting tModLoader server"
-    # NOTE: not passing --config — the manage script always loads
-    # $folder/serverconfig.txt which is exactly the file we just wrote, so an
-    # extra --config flag just leaks into the tModLoader CLI as $start_args
-    # where the double-dash form is unrecognized.
-    exec "$HOME/manage-tModLoaderServer.sh" start --folder "$TML_FOLDER"
+    exec ./LaunchUtils/ScriptCaller.sh -server \
+        -config "$SERVERCONFIG" \
+        -steamworkshopfolder "$TML_FOLDER/steamapps/workshop" \
+        -tmlsavedirectory "$TML_FOLDER"
 }
 
 # Skip main() when sourced for testing.
