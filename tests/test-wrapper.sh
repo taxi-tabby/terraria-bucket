@@ -88,7 +88,7 @@ assert_contains "$output" "seed=mycoolseed" "seed included when set"
 
 # ----- determine_world_clause tests -----
 TMP_WORLD_DIR=$(mktemp -d)
-trap 'rm -rf "$TMP_WORLD_DIR"' EXIT
+trap 'rm -rf "$TMP_WORLD_DIR" "${TMP_MODS_DIR:-}"' EXIT
 
 echo "Test: determine_world_clause returns autocreate when Worlds dir empty"
 output=$(WORLDS_DIR="$TMP_WORLD_DIR" WORLD_NAME=untitled WORLD_SIZE=3 \
