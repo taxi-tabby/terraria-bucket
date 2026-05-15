@@ -12,6 +12,30 @@ RUN dpkg --add-architecture i386 \
  && apt-get install -y --no-install-recommends libc6:i386 \
  && rm -rf /var/lib/apt/lists/*
 
+# Stage that materializes Git LFS objects into real binaries. Railway's git
+# clone doesn't smudge LFS files automatically, so the .tmod files in the
+# build context arrive as ~130-byte pointer text files instead of real .tmod
+# binaries. We pull them here so the final image has actual mod content.
+FROM --platform=linux/amd64 alpine:3.20 AS lfs-puller
+RUN apk add --no-cache git git-lfs ca-certificates
+WORKDIR /repo
+# Copy the entire build context (including .git/) so git-lfs has the LFS
+# pointer metadata and remote info it needs to fetch from GitHub.
+COPY . /repo/
+# Run a checkout of HEAD to force LFS smudge. `git lfs pull` is idempotent
+# and only downloads objects that are actually pointers in the working tree.
+RUN git lfs install --local \
+    && git lfs pull \
+    && echo "=== LFS materialization check ===" \
+    && for f in /repo/preload/Mods/*.tmod; do \
+         hdr=$(head -c 4 "$f"); \
+         if [ "$hdr" != "TMOD" ]; then \
+             echo "ERROR: $f is still an LFS pointer (header=$hdr)" >&2; \
+             exit 1; \
+         fi; \
+       done \
+    && echo "=== All .tmod files have valid TMOD headers ==="
+
 FROM --platform=linux/amd64 alpine:3.20
 
 RUN apk update \
@@ -64,8 +88,9 @@ RUN ISDOCKER=1 ./manage-tModLoaderServer.sh install-tml --github
 COPY --chown=tml:tml --chmod=0755 entrypoint-wrapper.sh /home/tml/entrypoint-wrapper.sh
 
 # Bundled mod files seeded into the volume on first run (see seed_mods_from_preload).
-# Local-only mods + install.txt (workshop IDs) + enabled.json live here.
-COPY --chown=tml:tml preload /preload
+# All 14 .tmod files (workshop + local) + enabled.json. Pulled from the
+# lfs-puller stage so the binaries are real, not LFS pointer files.
+COPY --chown=tml:tml --from=lfs-puller /repo/preload /preload
 
 EXPOSE 7777
 
