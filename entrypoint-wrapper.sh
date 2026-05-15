@@ -233,55 +233,82 @@ seed_mods_from_preload() {
     echo "[entrypoint] preload seed: $copied copied, $skipped already present"
 }
 
-prepare_steamcmd_volume_link() {
-    # SteamCMD's workshop_download_item ignores `+force_install_dir` and writes
-    # to its own install dir (/home/tml/Steam/steamapps). For workshop content
-    # to (a) end up where tModLoader reads it from
-    # ($folder/steamapps/workshop, set via -steamworkshopfolder) and (b) persist
-    # across redeploys, redirect SteamCMD's steamapps directory INTO the
-    # persistent volume via a symlink before any SteamCMD invocation.
-    #
-    # Direction is important. An older version of this script symlinked the
-    # other way ($folder/steamapps/workshop -> /home/tml/Steam/...), which put
-    # the actual files in the ephemeral image layer instead of the volume.
-    # That broke after image rebuilds. Now SteamCMD's writes land directly in
-    # the volume.
-    local steamcmd_steamapps="/home/tml/Steam/steamapps"
-    local volume_steamapps="$TML_FOLDER/steamapps"
-
-    # Clean up the legacy reverse-direction symlink if it's still around from
-    # an older deployment of this script.
-    if [[ -L "$volume_steamapps/workshop" ]]; then
-        local stale_target
-        stale_target=$(readlink "$volume_steamapps/workshop")
-        echo "[entrypoint] removing legacy symlink $volume_steamapps/workshop -> $stale_target"
-        rm "$volume_steamapps/workshop"
+cleanup_legacy_workshop_routing() {
+    # Earlier versions of this script tried two symlink schemes to route
+    # SteamCMD's workshop output to the volume:
+    #   1. /tModLoader/steamapps/workshop -> /home/tml/Steam/steamapps/workshop
+    #      → stored content in ephemeral image layer; lost on redeploy
+    #   2. /home/tml/Steam/steamapps -> /tModLoader/steamapps
+    #      → caused "I/O Operation Failed" during SteamCMD downloads because
+    #        atomic ops crossed mount boundaries (image layer ↔ Railway volume)
+    # We now use straight copies (no symlinks). Remove any leftover symlinks
+    # from those previous approaches.
+    if [[ -L "/home/tml/Steam/steamapps" ]]; then
+        local target
+        target=$(readlink "/home/tml/Steam/steamapps")
+        echo "[entrypoint] removing legacy forward symlink /home/tml/Steam/steamapps -> $target"
+        rm "/home/tml/Steam/steamapps"
     fi
-
-    mkdir -p "$volume_steamapps"
-
-    # If SteamCMD already created a steamapps directory (e.g. left over from a
-    # prior run before this fix landed), migrate its contents into the volume,
-    # then replace it with the symlink.
-    if [[ -d "$steamcmd_steamapps" ]] && [[ ! -L "$steamcmd_steamapps" ]]; then
-        if [[ -n "$(ls -A "$steamcmd_steamapps" 2>/dev/null)" ]]; then
-            echo "[entrypoint] migrating existing $steamcmd_steamapps content to volume..."
-            cp -rn "$steamcmd_steamapps/." "$volume_steamapps/" 2>/dev/null || true
-        fi
-        rm -rf "$steamcmd_steamapps"
+    if [[ -L "$TML_FOLDER/steamapps/workshop" ]]; then
+        local target
+        target=$(readlink "$TML_FOLDER/steamapps/workshop")
+        echo "[entrypoint] removing legacy reverse symlink $TML_FOLDER/steamapps/workshop -> $target"
+        rm "$TML_FOLDER/steamapps/workshop"
     fi
+}
 
-    # Verify or (re)create the forward symlink.
-    if [[ -L "$steamcmd_steamapps" ]]; then
-        if [[ "$(readlink "$steamcmd_steamapps")" == "$volume_steamapps" ]]; then
-            echo "[entrypoint] $steamcmd_steamapps already linked to volume"
-            return 0
-        fi
-        rm "$steamcmd_steamapps"
+force_reinstall_if_hash_orphaned() {
+    # A previous deploy may have written .install-hash even though the actual
+    # workshop download failed (the manage script's install-mods returns 0
+    # despite per-item "I/O Operation Failed" errors). If the hash is present
+    # but the volume has no workshop content, mods_need_install would short-
+    # circuit and the server would start with no workshop mods. Detect that
+    # mismatch and clear the hash to force a clean re-install.
+    [[ -f "$MOD_HASH_FILE" ]] || return 0
+    local workshop_content="$TML_FOLDER/steamapps/workshop/content/1281930"
+    if [[ ! -d "$workshop_content" ]] || [[ -z "$(ls -A "$workshop_content" 2>/dev/null)" ]]; then
+        echo "[entrypoint] mod hash present but volume workshop content missing; forcing re-install"
+        rm "$MOD_HASH_FILE"
     fi
+}
 
-    ln -s "$volume_steamapps" "$steamcmd_steamapps"
-    echo "[entrypoint] linked $steamcmd_steamapps -> $volume_steamapps"
+restore_workshop_from_volume() {
+    # SteamCMD checks its install dir (/home/tml/Steam/steamapps/workshop) for
+    # currently-installed item versions before deciding what to download.
+    # After a redeploy the image layer is fresh, so without this step SteamCMD
+    # thinks nothing is installed and re-downloads every mod. Copying the
+    # volume's content back into SteamCMD's view makes its version check pass
+    # and reduces redeploys to a quick verify rather than ~350MB of downloads.
+    local src="$TML_FOLDER/steamapps/workshop"
+    local dest="/home/tml/Steam/steamapps/workshop"
+    if [[ ! -d "$src" ]] || [[ -z "$(ls -A "$src" 2>/dev/null)" ]]; then
+        echo "[entrypoint] no cached workshop content in volume; skipping restore"
+        return 0
+    fi
+    mkdir -p "$dest"
+    echo "[entrypoint] restoring workshop cache from volume to $dest..."
+    # -r recursive, -n no-clobber. busybox cp supports both flags.
+    cp -rn "$src/." "$dest/" 2>/dev/null || true
+    echo "[entrypoint] workshop cache restored ($(du -sh "$dest" 2>/dev/null | cut -f1))"
+}
+
+sync_workshop_to_volume() {
+    # Copy freshly-downloaded workshop content from SteamCMD's install dir
+    # into the volume so (a) tModLoader (reading from $folder/steamapps/workshop
+    # via -steamworkshopfolder) finds it on this start, and (b) it survives
+    # the next container rebuild.
+    local src="/home/tml/Steam/steamapps/workshop"
+    local dest="$TML_FOLDER/steamapps/workshop"
+    if [[ ! -d "$src" ]] || [[ -z "$(ls -A "$src" 2>/dev/null)" ]]; then
+        echo "[entrypoint] no workshop content at $src to sync"
+        return 0
+    fi
+    mkdir -p "$dest"
+    echo "[entrypoint] syncing workshop content $src -> $dest..."
+    # -r recursive. Overwrite is intentional here: we want the freshest
+    # versions of any updated mods to make it into the volume.
+    cp -r "$src/." "$dest/"
+    echo "[entrypoint] workshop in volume: $(du -sh "$dest" 2>/dev/null | cut -f1)"
 }
 
 install_mods_if_needed() {
@@ -304,10 +331,13 @@ main() {
     ensure_tmodloader_installed
     seed_world_from_preload
     seed_mods_from_preload
-    # Redirect SteamCMD's writes into the volume BEFORE any workshop download
-    # so the content lands where tModLoader reads it from and persists across
-    # redeploys.
-    prepare_steamcmd_volume_link
+
+    # Workshop content lives in two places and we copy between them:
+    #   /home/tml/Steam/steamapps/workshop  ← SteamCMD writes here (ephemeral)
+    #   $TML_FOLDER/steamapps/workshop      ← tModLoader reads here (persistent)
+    cleanup_legacy_workshop_routing
+    force_reinstall_if_hash_orphaned
+    restore_workshop_from_volume
 
     local world_clause
     world_clause=$(determine_world_clause)
@@ -317,6 +347,7 @@ main() {
     echo "[entrypoint] wrote $SERVERCONFIG"
 
     install_mods_if_needed
+    sync_workshop_to_volume
 
     echo "[entrypoint] starting tModLoader server"
     # NOTE: not passing --config — the manage script always loads
