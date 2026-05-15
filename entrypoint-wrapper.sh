@@ -49,12 +49,15 @@ EOF
 }
 
 determine_world_clause() {
-    # Decide whether to load an existing world or autocreate a new one.
-    # Echoes a single line: either "world=<path>" or "autocreate=<size>".
+    # Emit the world-related config lines.
+    # Terraria's `autocreate` only works in conjunction with `-world`/`world=`,
+    # which tells it where to create the file. Without `world=`, the server
+    # ignores `autocreate` and drops into the interactive "Choose World:" prompt.
+    # We always emit `world=<path>`, and add `autocreate=<size>` when the file
+    # is missing so the server creates it at the same path.
     local target="${WORLDS_DIR}/${WORLD_NAME}.wld"
-    if [[ -f "$target" ]]; then
-        echo "world=${target}"
-    else
+    echo "world=${target}"
+    if [[ ! -f "$target" ]]; then
         echo "autocreate=${WORLD_SIZE}"
     fi
 }
@@ -157,6 +160,40 @@ seed_mods_from_preload() {
     echo "[entrypoint] preload seed: $copied copied, $skipped already present"
 }
 
+link_steamcmd_workshop_to_volume() {
+    # SteamCMD's workshop_download_item ignores `+force_install_dir` and writes
+    # to its own home ($HOME/Steam/steamapps/workshop). The manage script's
+    # start command passes `-steamworkshopfolder $folder/steamapps/workshop` to
+    # tModLoader, which looks for downloaded mods there. Bridge the two paths
+    # with a symlink so tModLoader actually finds the workshop content.
+    local home_dir="${HOME:-/home/tml}"
+    local src="$home_dir/Steam/steamapps/workshop"
+    local dest="$TML_FOLDER/steamapps/workshop"
+
+    if [[ ! -d "$src" ]]; then
+        echo "[entrypoint] no SteamCMD workshop dir at $src; skipping symlink"
+        return 0
+    fi
+
+    mkdir -p "$TML_FOLDER/steamapps"
+
+    if [[ -L "$dest" ]]; then
+        if [[ "$(readlink "$dest")" == "$src" ]]; then
+            echo "[entrypoint] workshop symlink already correct: $dest -> $src"
+            return 0
+        fi
+        rm "$dest"
+    elif [[ -e "$dest" ]]; then
+        # Real directory at the destination (shouldn't normally happen) — bail
+        # rather than risk deleting user data.
+        echo "[entrypoint] WARNING: $dest exists as a regular path, not a symlink. Skipping." >&2
+        return 0
+    fi
+
+    ln -s "$src" "$dest"
+    echo "[entrypoint] linked $dest -> $src"
+}
+
 install_mods_if_needed() {
     if mods_need_install; then
         echo "[entrypoint] install.txt changed - downloading workshop mods..."
@@ -185,11 +222,14 @@ main() {
     echo "[entrypoint] wrote $SERVERCONFIG"
 
     install_mods_if_needed
+    link_steamcmd_workshop_to_volume
 
     echo "[entrypoint] starting tModLoader server"
-    exec "$HOME/manage-tModLoaderServer.sh" start \
-         --folder "$TML_FOLDER" \
-         --config "$SERVERCONFIG"
+    # NOTE: not passing --config — the manage script always loads
+    # $folder/serverconfig.txt which is exactly the file we just wrote, so an
+    # extra --config flag just leaks into the tModLoader CLI as $start_args
+    # where the double-dash form is unrecognized.
+    exec "$HOME/manage-tModLoaderServer.sh" start --folder "$TML_FOLDER"
 }
 
 # Skip main() when sourced for testing.

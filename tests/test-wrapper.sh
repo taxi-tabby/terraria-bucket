@@ -90,21 +90,25 @@ assert_contains "$output" "seed=mycoolseed" "seed included when set"
 TMP_WORLD_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_WORLD_DIR" "${TMP_MODS_DIR:-}"' EXIT
 
-echo "Test: determine_world_clause returns autocreate when Worlds dir empty"
+echo "Test: determine_world_clause emits world= + autocreate when file missing"
 output=$(WORLDS_DIR="$TMP_WORLD_DIR" WORLD_NAME=untitled WORLD_SIZE=3 \
          determine_world_clause)
-assert_eq "autocreate=3" "$output" "empty dir -> autocreate"
+expected="world=$TMP_WORLD_DIR/untitled.wld
+autocreate=3"
+assert_eq "$expected" "$output" "missing world -> world= + autocreate"
 
-echo "Test: determine_world_clause picks existing world matching WORLD_NAME"
+echo "Test: determine_world_clause emits world= only when file exists"
 touch "$TMP_WORLD_DIR/myworld.wld"
 output=$(WORLDS_DIR="$TMP_WORLD_DIR" WORLD_NAME=myworld WORLD_SIZE=3 \
          determine_world_clause)
-assert_eq "world=$TMP_WORLD_DIR/myworld.wld" "$output" "existing match -> world="
+assert_eq "world=$TMP_WORLD_DIR/myworld.wld" "$output" "existing world -> world= only"
 
 echo "Test: determine_world_clause falls back to autocreate when name mismatch"
 output=$(WORLDS_DIR="$TMP_WORLD_DIR" WORLD_NAME=othername WORLD_SIZE=2 \
          determine_world_clause)
-assert_eq "autocreate=2" "$output" "mismatched name -> autocreate"
+expected="world=$TMP_WORLD_DIR/othername.wld
+autocreate=2"
+assert_eq "$expected" "$output" "mismatched name -> world= + autocreate"
 
 # ----- mods_need_install tests -----
 TMP_MODS_DIR=$(mktemp -d)
