@@ -343,7 +343,16 @@ install_workshop_mods_directly() {
     mkdir -p /home/tml/Steam/steamapps/workshop/content
     mkdir -p /home/tml/Steam/steamapps/workshop/downloads
 
-    local args=("+force_install_dir" "/home/tml/Steam" "+login" "anonymous")
+    # force_install_dir must NOT point at SteamCMD's own install folder —
+    # SteamCMD refuses with "Please set the game install path to something
+    # other than the Steam install folder" and aborts every download. Workshop
+    # downloads ignore this dir anyway (they always go to
+    # $STEAMCMD_HOME/steamapps/workshop), so any other path works. Keep it in
+    # /home/tml so it stays on the image filesystem.
+    local install_dir="/home/tml/.steamcmd-install-target"
+    mkdir -p "$install_dir"
+
+    local args=("+force_install_dir" "$install_dir" "+login" "anonymous")
     local id
     for id in "${ids[@]}"; do
         args+=("+workshop_download_item" "1281930" "$id")
