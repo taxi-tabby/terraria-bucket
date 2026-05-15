@@ -81,6 +81,28 @@ ensure_directories() {
     mkdir -p "$MODS_DIR" "$WORLDS_DIR" "$LOGS_DIR"
 }
 
+ensure_tmodloader_installed() {
+    # The Docker build runs `install-tml --github` but it can fail silently
+    # (e.g. if `unzip` is missing or the GitHub download is incomplete), leaving
+    # $HOME/server without the actual tModLoader binary. Detect that here and
+    # re-run install-tml so the server can actually start.
+    local home_dir="${HOME:-/home/tml}"
+    local script_caller="$home_dir/server/LaunchUtils/ScriptCaller.sh"
+    if [[ ! -f "$script_caller" ]]; then
+        echo "[entrypoint] tModLoader binary missing at $script_caller; running install-tml..."
+        if ! ( cd "$home_dir" && ./manage-tModLoaderServer.sh install-tml --github ); then
+            echo "[entrypoint] FATAL: install-tml failed; server cannot start" >&2
+            exit 1
+        fi
+        echo "[entrypoint] install-tml complete"
+    else
+        echo "[entrypoint] tModLoader binary present at $script_caller"
+    fi
+    # The manage script writes to $HOME/server/tModLoader-Logs/server.log before
+    # cd'ing, so the directory must exist or the redirect fails.
+    mkdir -p "$home_dir/server/tModLoader-Logs"
+}
+
 seed_mods_from_preload() {
     # Copy bundled mod files from the image's preload directory into the volume.
     # Only files that don't already exist at the target are copied — user-modified
@@ -125,6 +147,7 @@ install_mods_if_needed() {
 main() {
     echo "[entrypoint] preparing tModLoader server in $TML_FOLDER"
     ensure_directories
+    ensure_tmodloader_installed
     seed_mods_from_preload
 
     local world_clause

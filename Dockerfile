@@ -15,7 +15,7 @@ RUN dpkg --add-architecture i386 \
 FROM --platform=linux/amd64 alpine:3.20
 
 RUN apk update \
-    && apk add --no-cache bash curl nano file libgcc libstdc++ icu-libs \
+    && apk add --no-cache bash curl nano file libgcc libstdc++ icu-libs unzip \
     && rm -rf /var/cache/apk/*
 
 COPY --from=builder \
