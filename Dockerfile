@@ -57,6 +57,10 @@ RUN ISDOCKER=1 ./manage-tModLoaderServer.sh install-tml --github
 
 COPY --chown=tml:tml --chmod=0755 entrypoint-wrapper.sh /home/tml/entrypoint-wrapper.sh
 
+# Bundled mod files seeded into the volume on first run (see seed_mods_from_preload).
+# Local-only mods + install.txt (workshop IDs) + enabled.json live here.
+COPY --chown=tml:tml preload /preload
+
 EXPOSE 7777
 
 ENTRYPOINT [ "/home/tml/entrypoint-wrapper.sh" ]

@@ -143,6 +143,37 @@ assert_eq "0" "$rc" "changed install.txt -> install needed"
 
 rm -rf "$TMP_MODS_DIR"
 
+# ----- seed_mods_from_preload tests -----
+TMP_PRELOAD_DIR=$(mktemp -d)
+TMP_TARGET_MODS=$(mktemp -d)
+trap 'rm -rf "$TMP_WORLD_DIR" "${TMP_MODS_DIR:-}" "${TMP_PRELOAD_DIR:-}" "${TMP_TARGET_MODS:-}"' EXIT
+
+mkdir -p "$TMP_PRELOAD_DIR/Mods"
+echo "fake-tmod-content-a" > "$TMP_PRELOAD_DIR/Mods/LocalModA.tmod"
+echo "fake-tmod-content-b" > "$TMP_PRELOAD_DIR/Mods/LocalModB.tmod"
+echo "1234567890" > "$TMP_PRELOAD_DIR/Mods/install.txt"
+echo "[\"LocalModA\"]" > "$TMP_PRELOAD_DIR/Mods/enabled.json"
+
+echo "Test: seed_mods_from_preload copies all files when target empty"
+PRELOAD_DIR="$TMP_PRELOAD_DIR" MODS_DIR="$TMP_TARGET_MODS" \
+    seed_mods_from_preload > /dev/null
+[[ -f "$TMP_TARGET_MODS/LocalModA.tmod" ]]; assert_eq "0" "$?" "LocalModA copied"
+[[ -f "$TMP_TARGET_MODS/install.txt" ]]; assert_eq "0" "$?" "install.txt copied"
+[[ -f "$TMP_TARGET_MODS/enabled.json" ]]; assert_eq "0" "$?" "enabled.json copied"
+
+echo "Test: seed_mods_from_preload does not overwrite existing files"
+echo "user-modified" > "$TMP_TARGET_MODS/LocalModA.tmod"
+PRELOAD_DIR="$TMP_PRELOAD_DIR" MODS_DIR="$TMP_TARGET_MODS" \
+    seed_mods_from_preload > /dev/null
+content=$(cat "$TMP_TARGET_MODS/LocalModA.tmod")
+assert_eq "user-modified" "$content" "existing file preserved"
+
+echo "Test: seed_mods_from_preload no-op when preload dir missing"
+PRELOAD_DIR="/nonexistent/path" MODS_DIR="$TMP_TARGET_MODS" \
+    seed_mods_from_preload
+rc=$?
+assert_eq "0" "$rc" "missing preload returns 0"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

@@ -106,20 +106,74 @@ docker compose up -d
 | 서버가 즉시 종료됨 | `docker compose logs tml` 마지막 부분에서 원인 확인. 자주 보이는 원인: 모드 충돌, 손상된 `.wld` 파일, 메모리 부족 |
 | `.env` 변경이 반영되지 않음 | 컨테이너를 재생성해야 합니다: `docker compose up -d` (Compose가 변경을 감지하면 자동으로 재생성). 단순 `restart`는 기존 컨테이너를 다시 시작할 뿐이라 새 env 값이 적용되지 않을 수 있습니다. 빌드 args(TMLVERSION/UID/GID) 변경 시에는 `docker compose build` 후 `up -d` 필요. **이미 생성된 월드는 `WORLD_*` 변경의 영향을 받지 않습니다** (월드 데이터는 보존). |
 
+## Railway 배포
+
+[Railway](https://railway.com)에 배포하면 영구 볼륨에 월드/모드를 저장할 수 있습니다.
+
+### 사전 작업
+
+`preload/Mods/`에 다음이 있어야 합니다 (이 저장소에 이미 포함됨):
+- `install.txt` — Steam 워크샵 모드 ID 목록
+- `enabled.json` — 활성화할 모드 이름 목록 (워크샵 + 로컬 모두)
+- 로컬 전용 `.tmod` 파일들 (워크샵에 없는 모드)
+
+### Railway 설정
+
+1. **GitHub repo 연결** → Railway가 Dockerfile로 빌드
+2. **볼륨 생성**: Hobby 플랜 권장 (5GB)
+   - 마운트 경로: `/tModLoader`
+3. **환경 변수** (Railway 대시보드 Variables 탭):
+   ```
+   RAILWAY_RUN_UID=0          # 볼륨 권한 문제 회피 (필수)
+   WORLD_NAME=untitled
+   WORLD_SIZE=3
+   WORLD_DIFFICULTY=0
+   WORLD_SEED=
+   MAX_PLAYERS=8
+   SERVER_PASSWORD=0000
+   MOTD=Welcome!
+   SECURE=0
+   LANGUAGE=en-US
+   AUTOSAVE=1
+   SERVER_PORT=7777
+   ```
+4. **TCP 노출**: Settings → Networking → "Generate TCP Proxy Domain" → 포트 7777 매핑
+   - Railway가 외부에서 접속 가능한 `<host>:<port>` 부여
+5. **배포** → 첫 실행 시:
+   - 엔트리포인트가 `/preload/Mods/`에서 로컬 모드 4개 + `install.txt` + `enabled.json`을 볼륨으로 복사
+   - SteamCMD가 워크샵 모드 10개 다운로드 (~250MB, 2-5분)
+   - 다운로드 완료 후 서버 시작
+6. **클라이언트 접속**: Railway가 제공한 TCP 주소 + 포트로 접속
+
+### 모드 업데이트
+
+`preload/Mods/install.txt`에 ID 추가/제거 → git push → Railway 자동 재배포 → 엔트리포인트가 해시 변경 감지 → 차이나는 모드만 재다운로드.
+
+`enabled.json`도 마찬가지로 git 관리.
+
+로컬 전용 `.tmod` 변경 시: `preload/Mods/`에 파일 갱신 → git push.
+
+### 비용 (2026년 기준)
+
+- Hobby 플랜 $5/월 + 볼륨 사용량 (GB·분 단위) + 컴퓨팅 사용량
+- 24/7 운영 시 대략 **$10-15/월** 예상 (실제 사용량에 따라 변동)
+
 ## 폴더 구조 참고
 
 ```
 terraria-bucket/
-├── .env                       # 내 설정 (git 제외)
+├── .env                       # 로컬 개발용 설정 (git 제외)
 ├── .env.example               # 설정 템플릿
 ├── Dockerfile
-├── docker-compose.yml
+├── docker-compose.yml         # 로컬 docker compose용
 ├── entrypoint-wrapper.sh
-└── tModLoader/                # 서버 데이터 (git 제외)
-    ├── Mods/
-    │   ├── install.txt        # 워크샵 모드 ID (사용자가 넣음)
-    │   ├── enabled.json       # 활성 모드 목록 (사용자가 넣음)
-    │   └── *.tmod             # 로컬 모드 (선택)
+├── preload/                   # 이미지에 굽혀 컨테이너로 들어가는 모드 시드
+│   └── Mods/
+│       ├── install.txt        # 워크샵 모드 ID (git 관리)
+│       ├── enabled.json       # 활성 모드 목록 (git 관리)
+│       └── *.tmod             # 로컬 전용 모드 (git 관리)
+└── tModLoader/                # 로컬 런타임 데이터 (git 제외)
+    ├── Mods/                  # 첫 실행 시 preload에서 시드 + 워크샵 자동 다운로드
     ├── Worlds/
     │   └── *.wld              # 월드 파일
     ├── serverconfig.txt       # 자동 생성 (수동 편집 무의미)

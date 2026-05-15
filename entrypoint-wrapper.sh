@@ -11,6 +11,7 @@ WORLDS_DIR="${TML_FOLDER}/Worlds"
 LOGS_DIR="${TML_FOLDER}/logs"
 SERVERCONFIG="${TML_FOLDER}/serverconfig.txt"
 MOD_HASH_FILE="${MODS_DIR}/.install-hash"
+PRELOAD_DIR="${PRELOAD_DIR:-/preload}"
 
 generate_serverconfig() {
     # Emit a serverconfig.txt body to stdout.
@@ -80,6 +81,33 @@ ensure_directories() {
     mkdir -p "$MODS_DIR" "$WORLDS_DIR" "$LOGS_DIR"
 }
 
+seed_mods_from_preload() {
+    # Copy bundled mod files from the image's preload directory into the volume.
+    # Only files that don't already exist at the target are copied — user-modified
+    # files in the volume are preserved.
+    local src="${PRELOAD_DIR}/Mods"
+    if [[ ! -d "$src" ]]; then
+        echo "[entrypoint] no preload at $src; skipping seed"
+        return 0
+    fi
+
+    local copied=0 skipped=0
+    shopt -s nullglob
+    for file in "$src"/*; do
+        local name
+        name=$(basename "$file")
+        local dest="$MODS_DIR/$name"
+        if [[ -e "$dest" ]]; then
+            skipped=$((skipped + 1))
+        else
+            cp "$file" "$dest"
+            copied=$((copied + 1))
+        fi
+    done
+    shopt -u nullglob
+    echo "[entrypoint] preload seed: $copied copied, $skipped already present"
+}
+
 install_mods_if_needed() {
     if mods_need_install; then
         echo "[entrypoint] install.txt changed - downloading workshop mods..."
@@ -97,6 +125,7 @@ install_mods_if_needed() {
 main() {
     echo "[entrypoint] preparing tModLoader server in $TML_FOLDER"
     ensure_directories
+    seed_mods_from_preload
 
     local world_clause
     world_clause=$(determine_world_clause)
