@@ -40,6 +40,17 @@ EOF
     fi
 }
 
+determine_world_clause() {
+    # Decide whether to load an existing world or autocreate a new one.
+    # Echoes a single line: either "world=<path>" or "autocreate=<size>".
+    local target="${WORLDS_DIR}/${WORLD_NAME}.wld"
+    if [[ -f "$target" ]]; then
+        echo "world=${target}"
+    else
+        echo "autocreate=${WORLD_SIZE}"
+    fi
+}
+
 # Skip running main() when sourced for testing.
 if [[ "${TML_WRAPPER_TEST_MODE:-0}" == "1" ]]; then
     return 0 2>/dev/null || true
