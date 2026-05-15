@@ -106,6 +106,43 @@ output=$(WORLDS_DIR="$TMP_WORLD_DIR" WORLD_NAME=othername WORLD_SIZE=2 \
          determine_world_clause)
 assert_eq "autocreate=2" "$output" "mismatched name -> autocreate"
 
+# ----- mods_need_install tests -----
+TMP_MODS_DIR=$(mktemp -d)
+
+echo "Test: mods_need_install returns 1 (false) when install.txt missing"
+MODS_DIR="$TMP_MODS_DIR" MOD_HASH_FILE="$TMP_MODS_DIR/.install-hash" \
+    mods_need_install
+rc=$?
+assert_eq "1" "$rc" "no install.txt -> no install needed"
+
+echo "Test: mods_need_install returns 0 (true) on first run with install.txt"
+echo "12345" > "$TMP_MODS_DIR/install.txt"
+MODS_DIR="$TMP_MODS_DIR" MOD_HASH_FILE="$TMP_MODS_DIR/.install-hash" \
+    mods_need_install
+rc=$?
+assert_eq "0" "$rc" "install.txt present, no hash -> install needed"
+
+echo "Test: record_mod_hash writes sha256 of install.txt"
+MODS_DIR="$TMP_MODS_DIR" MOD_HASH_FILE="$TMP_MODS_DIR/.install-hash" \
+    record_mod_hash
+[[ -f "$TMP_MODS_DIR/.install-hash" ]]
+assert_eq "0" "$?" "hash file created"
+
+echo "Test: mods_need_install returns 1 (false) when hash matches"
+MODS_DIR="$TMP_MODS_DIR" MOD_HASH_FILE="$TMP_MODS_DIR/.install-hash" \
+    mods_need_install
+rc=$?
+assert_eq "1" "$rc" "matching hash -> no install needed"
+
+echo "Test: mods_need_install returns 0 (true) when install.txt changes"
+echo "67890" > "$TMP_MODS_DIR/install.txt"
+MODS_DIR="$TMP_MODS_DIR" MOD_HASH_FILE="$TMP_MODS_DIR/.install-hash" \
+    mods_need_install
+rc=$?
+assert_eq "0" "$rc" "changed install.txt -> install needed"
+
+rm -rf "$TMP_MODS_DIR"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
