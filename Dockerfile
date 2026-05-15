@@ -51,7 +51,11 @@ COPY --chown=tml:tml --chmod=0755 <<EOF ./.bin/steamcmd
 exec ~/Steam/steamcmd.sh "\$@"
 EOF
 
-RUN steamcmd +quit
+# Note: the official Dockerfile runs `RUN steamcmd +quit` here to pre-update
+# SteamCMD at build time. We skip it because that step requires executing the
+# 32-bit `linux32/steamcmd` binary in the builder, which fails on hosts without
+# i386 multiarch support (e.g. Railway's ARM-based Metal builder running amd64
+# via QEMU). SteamCMD will self-update on first runtime use instead.
 
 ADD --chown=tml:tml --chmod=0755 https://raw.githubusercontent.com/tModLoader/tModLoader/1.4.4/patches/tModLoader/Terraria/release_extras/DedicatedServerUtils/manage-tModLoaderServer.sh .
 
