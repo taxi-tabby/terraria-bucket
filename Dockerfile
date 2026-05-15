@@ -2,7 +2,9 @@
 # https://github.com/tModLoader/tModLoader/tree/1.4.4/patches/tModLoader/Terraria/release_extras/DedicatedServerUtils/Dockerfile
 # Only the final ENTRYPOINT is replaced with our wrapper.
 
-FROM ubuntu:22.04 as builder
+# Force amd64 throughout: tModLoader/SteamCMD have no ARM support, so even on
+# ARM build hosts (e.g. Railway's Metal builder) we emulate amd64 via QEMU.
+FROM --platform=linux/amd64 ubuntu:22.04 AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
 RUN dpkg --add-architecture i386 \
@@ -10,7 +12,7 @@ RUN dpkg --add-architecture i386 \
  && apt-get install -y --no-install-recommends libc6:i386 \
  && rm -rf /var/lib/apt/lists/*
 
-FROM alpine:3.20
+FROM --platform=linux/amd64 alpine:3.20
 
 RUN apk update \
     && apk add --no-cache bash curl nano file libgcc libstdc++ icu-libs \
