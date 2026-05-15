@@ -233,38 +233,55 @@ seed_mods_from_preload() {
     echo "[entrypoint] preload seed: $copied copied, $skipped already present"
 }
 
-link_steamcmd_workshop_to_volume() {
+prepare_steamcmd_volume_link() {
     # SteamCMD's workshop_download_item ignores `+force_install_dir` and writes
-    # to its own home ($HOME/Steam/steamapps/workshop). The manage script's
-    # start command passes `-steamworkshopfolder $folder/steamapps/workshop` to
-    # tModLoader, which looks for downloaded mods there. Bridge the two paths
-    # with a symlink so tModLoader actually finds the workshop content.
-    local home_dir="${HOME:-/home/tml}"
-    local src="$home_dir/Steam/steamapps/workshop"
-    local dest="$TML_FOLDER/steamapps/workshop"
+    # to its own install dir (/home/tml/Steam/steamapps). For workshop content
+    # to (a) end up where tModLoader reads it from
+    # ($folder/steamapps/workshop, set via -steamworkshopfolder) and (b) persist
+    # across redeploys, redirect SteamCMD's steamapps directory INTO the
+    # persistent volume via a symlink before any SteamCMD invocation.
+    #
+    # Direction is important. An older version of this script symlinked the
+    # other way ($folder/steamapps/workshop -> /home/tml/Steam/...), which put
+    # the actual files in the ephemeral image layer instead of the volume.
+    # That broke after image rebuilds. Now SteamCMD's writes land directly in
+    # the volume.
+    local steamcmd_steamapps="/home/tml/Steam/steamapps"
+    local volume_steamapps="$TML_FOLDER/steamapps"
 
-    if [[ ! -d "$src" ]]; then
-        echo "[entrypoint] no SteamCMD workshop dir at $src; skipping symlink"
-        return 0
+    # Clean up the legacy reverse-direction symlink if it's still around from
+    # an older deployment of this script.
+    if [[ -L "$volume_steamapps/workshop" ]]; then
+        local stale_target
+        stale_target=$(readlink "$volume_steamapps/workshop")
+        echo "[entrypoint] removing legacy symlink $volume_steamapps/workshop -> $stale_target"
+        rm "$volume_steamapps/workshop"
     fi
 
-    mkdir -p "$TML_FOLDER/steamapps"
+    mkdir -p "$volume_steamapps"
 
-    if [[ -L "$dest" ]]; then
-        if [[ "$(readlink "$dest")" == "$src" ]]; then
-            echo "[entrypoint] workshop symlink already correct: $dest -> $src"
+    # If SteamCMD already created a steamapps directory (e.g. left over from a
+    # prior run before this fix landed), migrate its contents into the volume,
+    # then replace it with the symlink.
+    if [[ -d "$steamcmd_steamapps" ]] && [[ ! -L "$steamcmd_steamapps" ]]; then
+        if [[ -n "$(ls -A "$steamcmd_steamapps" 2>/dev/null)" ]]; then
+            echo "[entrypoint] migrating existing $steamcmd_steamapps content to volume..."
+            cp -rn "$steamcmd_steamapps/." "$volume_steamapps/" 2>/dev/null || true
+        fi
+        rm -rf "$steamcmd_steamapps"
+    fi
+
+    # Verify or (re)create the forward symlink.
+    if [[ -L "$steamcmd_steamapps" ]]; then
+        if [[ "$(readlink "$steamcmd_steamapps")" == "$volume_steamapps" ]]; then
+            echo "[entrypoint] $steamcmd_steamapps already linked to volume"
             return 0
         fi
-        rm "$dest"
-    elif [[ -e "$dest" ]]; then
-        # Real directory at the destination (shouldn't normally happen) — bail
-        # rather than risk deleting user data.
-        echo "[entrypoint] WARNING: $dest exists as a regular path, not a symlink. Skipping." >&2
-        return 0
+        rm "$steamcmd_steamapps"
     fi
 
-    ln -s "$src" "$dest"
-    echo "[entrypoint] linked $dest -> $src"
+    ln -s "$volume_steamapps" "$steamcmd_steamapps"
+    echo "[entrypoint] linked $steamcmd_steamapps -> $volume_steamapps"
 }
 
 install_mods_if_needed() {
@@ -287,6 +304,10 @@ main() {
     ensure_tmodloader_installed
     seed_world_from_preload
     seed_mods_from_preload
+    # Redirect SteamCMD's writes into the volume BEFORE any workshop download
+    # so the content lands where tModLoader reads it from and persists across
+    # redeploys.
+    prepare_steamcmd_volume_link
 
     local world_clause
     world_clause=$(determine_world_clause)
@@ -296,7 +317,6 @@ main() {
     echo "[entrypoint] wrote $SERVERCONFIG"
 
     install_mods_if_needed
-    link_steamcmd_workshop_to_volume
 
     echo "[entrypoint] starting tModLoader server"
     # NOTE: not passing --config — the manage script always loads
