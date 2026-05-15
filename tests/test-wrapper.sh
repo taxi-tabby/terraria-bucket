@@ -110,59 +110,21 @@ expected="world=$TMP_WORLD_DIR/othername.wld
 autocreate=2"
 assert_eq "$expected" "$output" "mismatched name -> world= + autocreate"
 
-# ----- mods_need_install tests -----
-TMP_MODS_DIR=$(mktemp -d)
-
-echo "Test: mods_need_install returns 1 (false) when install.txt missing"
-MODS_DIR="$TMP_MODS_DIR" MOD_HASH_FILE="$TMP_MODS_DIR/.install-hash" \
-    mods_need_install
-rc=$?
-assert_eq "1" "$rc" "no install.txt -> no install needed"
-
-echo "Test: mods_need_install returns 0 (true) on first run with install.txt"
-echo "12345" > "$TMP_MODS_DIR/install.txt"
-MODS_DIR="$TMP_MODS_DIR" MOD_HASH_FILE="$TMP_MODS_DIR/.install-hash" \
-    mods_need_install
-rc=$?
-assert_eq "0" "$rc" "install.txt present, no hash -> install needed"
-
-echo "Test: record_mod_hash writes sha256 of install.txt"
-MODS_DIR="$TMP_MODS_DIR" MOD_HASH_FILE="$TMP_MODS_DIR/.install-hash" \
-    record_mod_hash
-[[ -f "$TMP_MODS_DIR/.install-hash" ]]
-assert_eq "0" "$?" "hash file created"
-
-echo "Test: mods_need_install returns 1 (false) when hash matches"
-MODS_DIR="$TMP_MODS_DIR" MOD_HASH_FILE="$TMP_MODS_DIR/.install-hash" \
-    mods_need_install
-rc=$?
-assert_eq "1" "$rc" "matching hash -> no install needed"
-
-echo "Test: mods_need_install returns 0 (true) when install.txt changes"
-echo "67890" > "$TMP_MODS_DIR/install.txt"
-MODS_DIR="$TMP_MODS_DIR" MOD_HASH_FILE="$TMP_MODS_DIR/.install-hash" \
-    mods_need_install
-rc=$?
-assert_eq "0" "$rc" "changed install.txt -> install needed"
-
-rm -rf "$TMP_MODS_DIR"
-
 # ----- seed_mods_from_preload tests -----
 TMP_PRELOAD_DIR=$(mktemp -d)
 TMP_TARGET_MODS=$(mktemp -d)
-trap 'rm -rf "$TMP_WORLD_DIR" "${TMP_MODS_DIR:-}" "${TMP_PRELOAD_DIR:-}" "${TMP_TARGET_MODS:-}"' EXIT
+trap 'rm -rf "$TMP_WORLD_DIR" "${TMP_PRELOAD_DIR:-}" "${TMP_TARGET_MODS:-}"' EXIT
 
 mkdir -p "$TMP_PRELOAD_DIR/Mods"
 echo "fake-tmod-content-a" > "$TMP_PRELOAD_DIR/Mods/LocalModA.tmod"
 echo "fake-tmod-content-b" > "$TMP_PRELOAD_DIR/Mods/LocalModB.tmod"
-echo "1234567890" > "$TMP_PRELOAD_DIR/Mods/install.txt"
 echo "[\"LocalModA\"]" > "$TMP_PRELOAD_DIR/Mods/enabled.json"
 
 echo "Test: seed_mods_from_preload copies all files when target empty"
 PRELOAD_DIR="$TMP_PRELOAD_DIR" MODS_DIR="$TMP_TARGET_MODS" \
     seed_mods_from_preload > /dev/null
 [[ -f "$TMP_TARGET_MODS/LocalModA.tmod" ]]; assert_eq "0" "$?" "LocalModA copied"
-[[ -f "$TMP_TARGET_MODS/install.txt" ]]; assert_eq "0" "$?" "install.txt copied"
+[[ -f "$TMP_TARGET_MODS/LocalModB.tmod" ]]; assert_eq "0" "$?" "LocalModB copied"
 [[ -f "$TMP_TARGET_MODS/enabled.json" ]]; assert_eq "0" "$?" "enabled.json copied"
 
 echo "Test: seed_mods_from_preload does not overwrite existing files"
@@ -181,7 +143,7 @@ assert_eq "0" "$rc" "missing preload returns 0"
 # ----- seed_world_from_preload tests -----
 TMP_SEED_PRELOAD=$(mktemp -d)
 TMP_SEED_WORLDS=$(mktemp -d)
-trap 'rm -rf "$TMP_WORLD_DIR" "${TMP_MODS_DIR:-}" "${TMP_PRELOAD_DIR:-}" "${TMP_TARGET_MODS:-}" "${TMP_SEED_PRELOAD:-}" "${TMP_SEED_WORLDS:-}"' EXIT
+trap 'rm -rf "$TMP_WORLD_DIR" "${TMP_PRELOAD_DIR:-}" "${TMP_TARGET_MODS:-}" "${TMP_SEED_PRELOAD:-}" "${TMP_SEED_WORLDS:-}"' EXIT
 
 echo "Test: seed_world_from_preload skips when .wld already exists"
 touch "$TMP_SEED_WORLDS/existing.wld"

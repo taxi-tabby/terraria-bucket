@@ -1,7 +1,17 @@
 #!/bin/bash
 # tModLoader server entrypoint wrapper.
-# Generates serverconfig.txt from environment variables, detects existing worlds,
-# performs hash-based mod installation, then execs the official management script.
+#
+# - Generates serverconfig.txt from environment variables on each start.
+# - Seeds an initial world from preload/Map/Terraria.zip on first run.
+# - Seeds bundled mod files from preload/Mods/ on first run.
+# - Verifies the tModLoader binary is present; reinstalls if not.
+# - Execs the tModLoader server directly (bypassing the official manage
+#   script's start command, which is_in_docker would re-invoke SteamCMD
+#   on every launch and break in Railway's volume environment).
+#
+# All mods (workshop + local) ship inside the image at /preload/Mods/.
+# We do NOT use SteamCMD at runtime — its workshop_download_item flow is
+# flaky across Railway's image-layer/volume filesystem boundary.
 
 set -euo pipefail
 
@@ -17,7 +27,6 @@ MODS_DIR="${TML_FOLDER}/Mods"
 WORLDS_DIR="${TML_FOLDER}/Worlds"
 LOGS_DIR="${TML_FOLDER}/logs"
 SERVERCONFIG="${TML_FOLDER}/serverconfig.txt"
-MOD_HASH_FILE="${MODS_DIR}/.install-hash"
 PRELOAD_DIR="${PRELOAD_DIR:-/preload}"
 
 generate_serverconfig() {
@@ -62,31 +71,6 @@ determine_world_clause() {
     fi
 }
 
-mods_need_install() {
-    # Return 0 (success/true) if install.txt exists and differs from stored hash.
-    # Return 1 (failure/false) if install.txt is missing or hash matches.
-    local install_file="${MODS_DIR}/install.txt"
-    [[ -f "$install_file" ]] || return 1
-
-    local current_hash
-    current_hash=$(sha256sum "$install_file" | awk '{print $1}')
-
-    if [[ -f "$MOD_HASH_FILE" ]]; then
-        local stored_hash
-        stored_hash=$(cat "$MOD_HASH_FILE")
-        [[ "$current_hash" != "$stored_hash" ]]
-    else
-        return 0
-    fi
-}
-
-record_mod_hash() {
-    # Write the current install.txt hash to MOD_HASH_FILE.
-    local install_file="${MODS_DIR}/install.txt"
-    [[ -f "$install_file" ]] || return 0
-    sha256sum "$install_file" | awk '{print $1}' > "$MOD_HASH_FILE"
-}
-
 ensure_directories() {
     mkdir -p "$MODS_DIR" "$WORLDS_DIR" "$LOGS_DIR"
 }
@@ -118,8 +102,6 @@ ensure_tmodloader_installed() {
         exit 1
     fi
 
-    # Verify the install actually produced the binary. install-tml can return 0
-    # even when its internal unzip or version detection failed.
     if [[ ! -f "$script_caller" ]]; then
         echo "[entrypoint] FATAL: install-tml completed but $script_caller still missing" >&2
         echo "[entrypoint] contents of $home_dir/server:" >&2
@@ -127,8 +109,6 @@ ensure_tmodloader_installed() {
         exit 1
     fi
 
-    # The manage script writes to $HOME/server/tModLoader-Logs/server.log before
-    # cd'ing, so the directory must exist or the redirect fails.
     mkdir -p "$home_dir/server/tModLoader-Logs"
     echo "[entrypoint] install-tml complete"
 }
@@ -144,8 +124,7 @@ seed_world_from_preload() {
     #      inside dated cloud-backup zips at tModLoader/Worlds/Backups/*.zip.
     #      In that case the newest backup is extracted and used.
     #
-    # If the seeded world name differs from WORLD_NAME (e.g. backup was named
-    # "Inferior_Touch_of_Power" but WORLD_NAME=untitled), updates WORLD_NAME in
+    # If the seeded world name differs from WORLD_NAME, updates WORLD_NAME in
     # this shell so determine_world_clause loads the seeded world.
     if find "$WORLDS_DIR" -maxdepth 1 -name "*.wld" -print -quit 2>/dev/null | grep -q .; then
         echo "[entrypoint] world already present in $WORLDS_DIR; preserving (no seed)"
@@ -233,157 +212,29 @@ seed_mods_from_preload() {
     echo "[entrypoint] preload seed: $copied copied, $skipped already present"
 }
 
-cleanup_legacy_workshop_routing() {
-    # Earlier versions of this script tried two symlink schemes to route
-    # SteamCMD's workshop output to the volume:
-    #   1. /tModLoader/steamapps/workshop -> /home/tml/Steam/steamapps/workshop
-    #      → stored content in ephemeral image layer; lost on redeploy
-    #   2. /home/tml/Steam/steamapps -> /tModLoader/steamapps
-    #      → caused "I/O Operation Failed" during SteamCMD downloads because
-    #        atomic ops crossed mount boundaries (image layer ↔ Railway volume)
-    # We now use straight copies (no symlinks). Remove any leftover symlinks
-    # from those previous approaches.
+cleanup_legacy_steamcmd_state() {
+    # Earlier versions of this script tried to use SteamCMD at runtime to
+    # download workshop mods, with several symlink schemes between the image
+    # layer and the Railway volume. All of them caused different failures
+    # ("I/O Operation Failed", lost workshop content on redeploy, etc.).
+    # We now bundle all .tmod files inside /preload/Mods at build time and
+    # never invoke SteamCMD. Clean up any leftover state from those attempts
+    # so it doesn't confuse anything.
     if [[ -L "/home/tml/Steam/steamapps" ]]; then
-        local target
-        target=$(readlink "/home/tml/Steam/steamapps")
-        echo "[entrypoint] removing legacy forward symlink /home/tml/Steam/steamapps -> $target"
+        echo "[entrypoint] removing legacy /home/tml/Steam/steamapps symlink"
         rm "/home/tml/Steam/steamapps"
     fi
     if [[ -L "$TML_FOLDER/steamapps/workshop" ]]; then
-        local target
-        target=$(readlink "$TML_FOLDER/steamapps/workshop")
-        echo "[entrypoint] removing legacy reverse symlink $TML_FOLDER/steamapps/workshop -> $target"
+        echo "[entrypoint] removing legacy $TML_FOLDER/steamapps/workshop symlink"
         rm "$TML_FOLDER/steamapps/workshop"
     fi
-}
-
-force_reinstall_if_hash_orphaned() {
-    # A previous deploy may have written .install-hash even though the actual
-    # workshop download failed (the manage script's install-mods returns 0
-    # despite per-item "I/O Operation Failed" errors). If the hash is present
-    # but the volume has no workshop content, mods_need_install would short-
-    # circuit and the server would start with no workshop mods. Detect that
-    # mismatch and clear the hash to force a clean re-install.
-    [[ -f "$MOD_HASH_FILE" ]] || return 0
-    local workshop_content="$TML_FOLDER/steamapps/workshop/content/1281930"
-    if [[ ! -d "$workshop_content" ]] || [[ -z "$(ls -A "$workshop_content" 2>/dev/null)" ]]; then
-        echo "[entrypoint] mod hash present but volume workshop content missing; forcing re-install"
-        rm "$MOD_HASH_FILE"
+    if [[ -f "$MODS_DIR/.install-hash" ]]; then
+        echo "[entrypoint] removing obsolete $MODS_DIR/.install-hash"
+        rm "$MODS_DIR/.install-hash"
     fi
-}
-
-restore_workshop_from_volume() {
-    # SteamCMD checks its install dir (/home/tml/Steam/steamapps/workshop) for
-    # currently-installed item versions before deciding what to download.
-    # After a redeploy the image layer is fresh, so without this step SteamCMD
-    # thinks nothing is installed and re-downloads every mod. Copying the
-    # volume's content back into SteamCMD's view makes its version check pass
-    # and reduces redeploys to a quick verify rather than ~350MB of downloads.
-    local src="$TML_FOLDER/steamapps/workshop"
-    local dest="/home/tml/Steam/steamapps/workshop"
-    if [[ ! -d "$src" ]] || [[ -z "$(ls -A "$src" 2>/dev/null)" ]]; then
-        echo "[entrypoint] no cached workshop content in volume; skipping restore"
-        return 0
-    fi
-    mkdir -p "$dest"
-    echo "[entrypoint] restoring workshop cache from volume to $dest..."
-    # -r recursive, -n no-clobber. busybox cp supports both flags.
-    cp -rn "$src/." "$dest/" 2>/dev/null || true
-    echo "[entrypoint] workshop cache restored ($(du -sh "$dest" 2>/dev/null | cut -f1))"
-}
-
-sync_workshop_to_volume() {
-    # Copy freshly-downloaded workshop content from SteamCMD's install dir
-    # into the volume so (a) tModLoader (reading from $folder/steamapps/workshop
-    # via -steamworkshopfolder) finds it on this start, and (b) it survives
-    # the next container rebuild.
-    local src="/home/tml/Steam/steamapps/workshop"
-    local dest="$TML_FOLDER/steamapps/workshop"
-    if [[ ! -d "$src" ]] || [[ -z "$(ls -A "$src" 2>/dev/null)" ]]; then
-        echo "[entrypoint] no workshop content at $src to sync"
-        return 0
-    fi
-    mkdir -p "$dest"
-    echo "[entrypoint] syncing workshop content $src -> $dest..."
-    # -r recursive. Overwrite is intentional here: we want the freshest
-    # versions of any updated mods to make it into the volume.
-    cp -r "$src/." "$dest/"
-    echo "[entrypoint] workshop in volume: $(du -sh "$dest" 2>/dev/null | cut -f1)"
-}
-
-install_workshop_mods_directly() {
-    # We invoke SteamCMD ourselves instead of going through the manage script's
-    # install-mods command. The manage script does `pushd Mods` (= cwd in the
-    # Railway volume) before running SteamCMD with `+force_install_dir $folder`,
-    # which causes SteamCMD's internal atomic-rename ops to cross the image-
-    # layer / volume filesystem boundary and fail with "I/O Operation Failed"
-    # on every workshop item. Running SteamCMD with cwd in /home/tml keeps
-    # all its operations on a single filesystem.
-    local install_file="${MODS_DIR}/install.txt"
-    [[ -f "$install_file" ]] || { echo "[entrypoint] no install.txt; nothing to install"; return 0; }
-
-    # Parse workshop IDs (one per line, ignore blanks and comments)
-    local ids=()
-    local line
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        line="${line%$'\r'}"            # strip CR (in case file has CRLF)
-        line="${line//[[:space:]]/}"    # strip all whitespace
-        [[ -z "$line" || "$line" == \#* ]] && continue
-        ids+=("$line")
-    done < "$install_file"
-
-    if [[ ${#ids[@]} -eq 0 ]]; then
-        echo "[entrypoint] install.txt has no workshop IDs"
-        return 0
-    fi
-
-    echo "[entrypoint] downloading ${#ids[@]} workshop item(s) via direct SteamCMD..."
-
-    # Pre-create SteamCMD's expected dirs so it doesn't fail on missing parents.
-    mkdir -p /home/tml/Steam/steamapps/workshop/content
-    mkdir -p /home/tml/Steam/steamapps/workshop/downloads
-
-    # force_install_dir must NOT point at SteamCMD's own install folder —
-    # SteamCMD refuses with "Please set the game install path to something
-    # other than the Steam install folder" and aborts every download. Workshop
-    # downloads ignore this dir anyway (they always go to
-    # $STEAMCMD_HOME/steamapps/workshop), so any other path works. Keep it in
-    # /home/tml so it stays on the image filesystem.
-    local install_dir="/home/tml/.steamcmd-install-target"
-    mkdir -p "$install_dir"
-
-    local args=("+force_install_dir" "$install_dir" "+login" "anonymous")
-    local id
-    for id in "${ids[@]}"; do
-        args+=("+workshop_download_item" "1281930" "$id")
-    done
-    args+=("+quit")
-
-    local rc=0
-    ( cd /home/tml && /home/tml/.bin/steamcmd "${args[@]}" ) || rc=$?
-
-    if [[ $rc -ne 0 ]]; then
-        echo "[entrypoint] SteamCMD exited with code $rc" >&2
-        if [[ -f /home/tml/Steam/logs/stderr.txt ]]; then
-            echo "[entrypoint] last lines of /home/tml/Steam/logs/stderr.txt:" >&2
-            tail -30 /home/tml/Steam/logs/stderr.txt >&2 || true
-        fi
-        return 1
-    fi
-    return 0
-}
-
-install_mods_if_needed() {
-    if mods_need_install; then
-        echo "[entrypoint] install.txt changed - downloading workshop mods..."
-        if install_workshop_mods_directly; then
-            record_mod_hash
-            echo "[entrypoint] mod install complete"
-        else
-            echo "[entrypoint] WARNING: mod install failed; starting server anyway" >&2
-        fi
-    else
-        echo "[entrypoint] mods up to date; skipping install"
+    if [[ -f "$MODS_DIR/install.txt" ]]; then
+        echo "[entrypoint] removing obsolete $MODS_DIR/install.txt (workshop mods are bundled now)"
+        rm "$MODS_DIR/install.txt"
     fi
 }
 
@@ -391,15 +242,9 @@ main() {
     echo "[entrypoint] preparing tModLoader server in $TML_FOLDER"
     ensure_directories
     ensure_tmodloader_installed
+    cleanup_legacy_steamcmd_state
     seed_world_from_preload
     seed_mods_from_preload
-
-    # Workshop content lives in two places and we copy between them:
-    #   /home/tml/Steam/steamapps/workshop  ← SteamCMD writes here (ephemeral)
-    #   $TML_FOLDER/steamapps/workshop      ← tModLoader reads here (persistent)
-    cleanup_legacy_workshop_routing
-    force_reinstall_if_hash_orphaned
-    restore_workshop_from_volume
 
     local world_clause
     world_clause=$(determine_world_clause)
@@ -408,13 +253,11 @@ main() {
     generate_serverconfig "$world_clause" > "$SERVERCONFIG"
     echo "[entrypoint] wrote $SERVERCONFIG"
 
-    install_mods_if_needed
-    sync_workshop_to_volume
-
-    # Bypass the manage script's `start` command. Its is_in_docker branch would
-    # re-invoke install_workshop_mods with the broken cross-filesystem cwd, AND
-    # try to redirect to a non-existent log file. Run ScriptCaller.sh directly
-    # — that's what the manage script ultimately exec's anyway.
+    # Bypass the manage script's `start` command — its is_in_docker branch
+    # would re-invoke SteamCMD on every launch (which fails in this env),
+    # and also tries to redirect output to a log file that may not exist.
+    # Launch tModLoader directly via the same ScriptCaller.sh that manage
+    # ultimately exec's.
     local server_dir="$HOME/server"
     cd "$server_dir" || { echo "[entrypoint] FATAL: $server_dir missing" >&2; exit 1; }
 
@@ -426,7 +269,6 @@ main() {
     echo "[entrypoint] starting tModLoader server"
     exec ./LaunchUtils/ScriptCaller.sh -server \
         -config "$SERVERCONFIG" \
-        -steamworkshopfolder "$TML_FOLDER/steamapps/workshop" \
         -tmlsavedirectory "$TML_FOLDER"
 }
 
