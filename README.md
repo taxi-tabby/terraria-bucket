@@ -101,10 +101,10 @@ docker compose up -d
 | 증상 | 확인할 것 |
 |---|---|
 | 클라이언트에서 접속 불가 | 1) `docker compose ps`로 컨테이너 실행 확인 <br> 2) `sudo ufw allow 7777/tcp`로 방화벽 개방 <br> 3) 클라우드 보안 그룹에서 7777/tcp 인바운드 허용 |
-| 권한 오류 (`Permission denied`) | 호스트 사용자 ID 확인: `id -u`, `id -g` → `.env`의 `UID`, `GID`에 반영 후 재빌드. 기존 파일은 `sudo chown -R 1000:1000 tModLoader/` |
+| 권한 오류 (`Permission denied`) | 호스트 사용자 ID 확인: `id -u`, `id -g` → `.env`의 `UID`, `GID`에 반영 후 재빌드. 기존 파일은 `sudo chown -R $(id -u):$(id -g) tModLoader/` |
 | 모드가 활성화되지 않음 | `tModLoader/Mods/`에 `install.txt`와 `enabled.json`이 **둘 다** 있는지 확인 |
 | 서버가 즉시 종료됨 | `docker compose logs tml` 마지막 부분에서 원인 확인. 자주 보이는 원인: 모드 충돌, 손상된 `.wld` 파일, 메모리 부족 |
-| `.env` 변경이 반영되지 않음 | 단순 재시작(`docker compose restart`)은 환경 변수를 다시 로드합니다. 단, **이미 생성된 월드는 `WORLD_*` 변경의 영향을 받지 않습니다** (월드 데이터는 보존). |
+| `.env` 변경이 반영되지 않음 | 컨테이너를 재생성해야 합니다: `docker compose up -d` (Compose가 변경을 감지하면 자동으로 재생성). 단순 `restart`는 기존 컨테이너를 다시 시작할 뿐이라 새 env 값이 적용되지 않을 수 있습니다. 빌드 args(TMLVERSION/UID/GID) 변경 시에는 `docker compose build` 후 `up -d` 필요. **이미 생성된 월드는 `WORLD_*` 변경의 영향을 받지 않습니다** (월드 데이터는 보존). |
 
 ## 폴더 구조 참고
 
