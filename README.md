@@ -128,7 +128,6 @@ docker compose up -d
    WORLD_NAME=untitled
    WORLD_SIZE=3
    WORLD_DIFFICULTY=0
-   WORLD_SEED=
    MAX_PLAYERS=8
    SERVER_PASSWORD=0000
    MOTD=Welcome!
@@ -137,6 +136,9 @@ docker compose up -d
    AUTOSAVE=1
    SERVER_PORT=7777
    ```
+   ⚠️ **`TMLVERSION` 변수는 만들지 마세요** (특정 버전 고정이 필요한 경우만 추가). 빈 문자열로
+   두면 manage script가 빈 값을 유효한 버전으로 오인해 설치가 깨집니다. `WORLD_SEED`도
+   기본값(랜덤)을 원하면 변수 자체를 생성하지 마세요.
 4. **TCP 노출**: Settings → Networking → "Generate TCP Proxy Domain" → 포트 7777 매핑
    - Railway가 외부에서 접속 가능한 `<host>:<port>` 부여
 5. **배포** → 첫 실행 시:

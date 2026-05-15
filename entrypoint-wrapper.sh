@@ -5,6 +5,13 @@
 
 set -euo pipefail
 
+# Empty TMLVERSION trips up the manage script's get_version (it treats "" as a
+# valid version string), making install-tml think the install is up to date
+# even when it's broken. Treat empty == unset throughout.
+if [[ -v TMLVERSION ]] && [[ -z "${TMLVERSION:-}" ]]; then
+    unset TMLVERSION
+fi
+
 TML_FOLDER="${TML_FOLDER:-/tModLoader}"
 MODS_DIR="${TML_FOLDER}/Mods"
 WORLDS_DIR="${TML_FOLDER}/Worlds"
@@ -83,24 +90,44 @@ ensure_directories() {
 
 ensure_tmodloader_installed() {
     # The Docker build runs `install-tml --github` but it can fail silently
-    # (e.g. if `unzip` is missing or the GitHub download is incomplete), leaving
+    # (unzip failure, version detection returning empty, etc.), leaving
     # $HOME/server without the actual tModLoader binary. Detect that here and
     # re-run install-tml so the server can actually start.
     local home_dir="${HOME:-/home/tml}"
     local script_caller="$home_dir/server/LaunchUtils/ScriptCaller.sh"
-    if [[ ! -f "$script_caller" ]]; then
-        echo "[entrypoint] tModLoader binary missing at $script_caller; running install-tml..."
-        if ! ( cd "$home_dir" && ./manage-tModLoaderServer.sh install-tml --github ); then
-            echo "[entrypoint] FATAL: install-tml failed; server cannot start" >&2
-            exit 1
-        fi
-        echo "[entrypoint] install-tml complete"
-    else
+    local ver_marker="$home_dir/server/.ver"
+
+    if [[ -f "$script_caller" ]]; then
         echo "[entrypoint] tModLoader binary present at $script_caller"
+        mkdir -p "$home_dir/server/tModLoader-Logs"
+        return 0
     fi
+
+    echo "[entrypoint] tModLoader binary missing at $script_caller; running install-tml..."
+
+    # Clear any stale version marker from a previous broken install — if .ver
+    # exists and matches the new (also broken) version, install-tml skips the
+    # actual install and returns "up to date" without doing anything.
+    rm -f "$ver_marker"
+
+    if ! ( cd "$home_dir" && ./manage-tModLoaderServer.sh install-tml --github ); then
+        echo "[entrypoint] FATAL: install-tml exited with error" >&2
+        exit 1
+    fi
+
+    # Verify the install actually produced the binary. install-tml can return 0
+    # even when its internal unzip or version detection failed.
+    if [[ ! -f "$script_caller" ]]; then
+        echo "[entrypoint] FATAL: install-tml completed but $script_caller still missing" >&2
+        echo "[entrypoint] contents of $home_dir/server:" >&2
+        ls -la "$home_dir/server" >&2 || true
+        exit 1
+    fi
+
     # The manage script writes to $HOME/server/tModLoader-Logs/server.log before
     # cd'ing, so the directory must exist or the redirect fails.
     mkdir -p "$home_dir/server/tModLoader-Logs"
+    echo "[entrypoint] install-tml complete"
 }
 
 seed_mods_from_preload() {
