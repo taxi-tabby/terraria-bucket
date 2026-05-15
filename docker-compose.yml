@@ -1,0 +1,18 @@
+services:
+  tml:
+    container_name: tml
+    restart: unless-stopped
+    build:
+      context: .
+      args:
+        TMLVERSION: ${TMLVERSION:-}
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    env_file:
+      - .env
+    ports:
+      - "${SERVER_PORT:-7777}:7777"
+    tty: true
+    stdin_open: true
+    volumes:
+      - ./tModLoader:/tModLoader
