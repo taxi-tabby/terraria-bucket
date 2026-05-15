@@ -86,6 +86,26 @@ output=$(WORLD_NAME=x WORLD_SIZE=1 WORLD_DIFFICULTY=0 WORLD_SEED=mycoolseed \
          generate_serverconfig "autocreate=1")
 assert_contains "$output" "seed=mycoolseed" "seed included when set"
 
+# ----- determine_world_clause tests -----
+TMP_WORLD_DIR=$(mktemp -d)
+trap 'rm -rf "$TMP_WORLD_DIR"' EXIT
+
+echo "Test: determine_world_clause returns autocreate when Worlds dir empty"
+output=$(WORLDS_DIR="$TMP_WORLD_DIR" WORLD_NAME=untitled WORLD_SIZE=3 \
+         determine_world_clause)
+assert_eq "autocreate=3" "$output" "empty dir -> autocreate"
+
+echo "Test: determine_world_clause picks existing world matching WORLD_NAME"
+touch "$TMP_WORLD_DIR/myworld.wld"
+output=$(WORLDS_DIR="$TMP_WORLD_DIR" WORLD_NAME=myworld WORLD_SIZE=3 \
+         determine_world_clause)
+assert_eq "world=$TMP_WORLD_DIR/myworld.wld" "$output" "existing match -> world="
+
+echo "Test: determine_world_clause falls back to autocreate when name mismatch"
+output=$(WORLDS_DIR="$TMP_WORLD_DIR" WORLD_NAME=othername WORLD_SIZE=2 \
+         determine_world_clause)
+assert_eq "autocreate=2" "$output" "mismatched name -> autocreate"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
