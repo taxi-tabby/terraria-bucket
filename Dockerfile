@@ -64,11 +64,38 @@ RUN ISDOCKER=1 ./manage-tModLoaderServer.sh install-tml --github
 COPY --chown=tml:tml --chmod=0755 entrypoint-wrapper.sh /home/tml/entrypoint-wrapper.sh
 
 # Bundled mod files seeded into the volume on first run (see seed_mods_from_preload).
-# Contains 12 mods that fit under GitHub's 100MB-per-file limit. The two
-# largest workshop mods (CalamityMod ~110MB, CalamityModMusic ~180MB) are
-# NOT bundled — the entrypoint downloads those from CALAMITY_MOD_URL and
-# CALAMITY_MUSIC_URL env vars on first run instead.
+# preload/Mods/ contains 12 .tmod files that fit under GitHub's 100MB-per-file
+# limit (regular git blobs, no LFS).
 COPY --chown=tml:tml preload /preload
+
+# The two largest workshop mods exceed GitHub's 100MB-per-file limit:
+#   - CalamityMod.tmod (~110MB)
+#   - CalamityModMusic.tmod (~180MB)
+# They cannot live in the git repo, so fetch them at build time from URLs
+# the user provides via Railway service variables (which Railway exposes as
+# Docker build args). If a URL isn't set the mod just won't be bundled.
+#
+# To set up: upload the files anywhere with a stable public URL (GitHub
+# Releases on a public repo works well, no auth needed), then set
+# CALAMITY_MOD_URL and CALAMITY_MUSIC_URL in Railway's Variables tab.
+ARG CALAMITY_MOD_URL=""
+ARG CALAMITY_MUSIC_URL=""
+RUN if [ -n "$CALAMITY_MOD_URL" ]; then \
+        echo "[build] fetching CalamityMod.tmod from $CALAMITY_MOD_URL..."; \
+        curl -fL --retry 3 "$CALAMITY_MOD_URL" -o /preload/Mods/CalamityMod.tmod \
+            && [ "$(head -c 4 /preload/Mods/CalamityMod.tmod)" = "TMOD" ] \
+            || { echo "[build] ERROR: CalamityMod.tmod download invalid"; rm -f /preload/Mods/CalamityMod.tmod; exit 1; }; \
+    else \
+        echo "[build] CALAMITY_MOD_URL not set; CalamityMod will NOT be bundled" >&2; \
+    fi && \
+    if [ -n "$CALAMITY_MUSIC_URL" ]; then \
+        echo "[build] fetching CalamityModMusic.tmod from $CALAMITY_MUSIC_URL..."; \
+        curl -fL --retry 3 "$CALAMITY_MUSIC_URL" -o /preload/Mods/CalamityModMusic.tmod \
+            && [ "$(head -c 4 /preload/Mods/CalamityModMusic.tmod)" = "TMOD" ] \
+            || { echo "[build] ERROR: CalamityModMusic.tmod download invalid"; rm -f /preload/Mods/CalamityModMusic.tmod; exit 1; }; \
+    else \
+        echo "[build] CALAMITY_MUSIC_URL not set; CalamityModMusic will NOT be bundled" >&2; \
+    fi
 
 EXPOSE 7777
 

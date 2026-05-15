@@ -135,11 +135,37 @@ docker compose up -d
 
 ### 사전 작업
 
-`preload/Mods/`에 다음이 모두 git에 커밋되어 있어야 합니다 (이 저장소에 이미 포함됨):
-- 모든 `.tmod` 파일 (워크샵 + 로컬, 총 14개)
+`preload/Mods/`에 다음이 git에 커밋되어 있어야 합니다 (이 저장소에 이미 포함됨):
+- 12개의 `.tmod` 파일 (100MB 미만, git에 직접 저장)
 - `enabled.json` — 활성화할 모드 이름 목록
 
 `preload/Map/Terraria.zip` 도 첫 시작 시 월드 시드로 사용됩니다 (선택).
+
+### ⚠️ 큰 파일 2개는 외부 URL로 가져옴
+
+GitHub은 파일당 100MB 한도가 있어서 다음 2개는 repo에 못 올립니다:
+- **`CalamityMod.tmod`** (~109MB)
+- **`CalamityModMusic.tmod`** (~179MB)
+
+빌드 시점에 외부 URL에서 다운로드합니다. **GitHub Releases**를 사용하는 게 가장 간단합니다:
+
+1. GitHub에서 이 repo의 **Releases** 페이지로 이동 → **"Create a new release"** 클릭
+2. Tag: 예) `mods-v1`, Title 자유
+3. **Attach binaries**: `CalamityMod.tmod`, `CalamityModMusic.tmod` 두 파일 업로드
+4. **Publish release** 클릭
+5. 게시 후 각 파일을 우클릭 → "Copy link address" → 다음 형식의 URL 복사:
+   ```
+   https://github.com/<username>/<repo>/releases/download/mods-v1/CalamityMod.tmod
+   https://github.com/<username>/<repo>/releases/download/mods-v1/CalamityModMusic.tmod
+   ```
+6. Railway 대시보드의 Variables 탭에서:
+   ```
+   CALAMITY_MOD_URL=<위 첫번째 URL>
+   CALAMITY_MUSIC_URL=<위 두번째 URL>
+   ```
+7. Railway가 재빌드되면서 빌드 시 두 파일을 받아옵니다 (`[build] fetching CalamityMod.tmod from ...` 로그 확인)
+
+만약 URL을 설정하지 않으면 이 2개 모드 없이 서버가 시작됩니다. 다른 모드들은 정상 작동.
 
 ### Railway 설정
 
