@@ -51,7 +51,33 @@ determine_world_clause() {
     fi
 }
 
+mods_need_install() {
+    # Return 0 (success/true) if install.txt exists and differs from stored hash.
+    # Return 1 (failure/false) if install.txt is missing or hash matches.
+    local install_file="${MODS_DIR}/install.txt"
+    [[ -f "$install_file" ]] || return 1
+
+    local current_hash
+    current_hash=$(sha256sum "$install_file" | awk '{print $1}')
+
+    if [[ -f "$MOD_HASH_FILE" ]]; then
+        local stored_hash
+        stored_hash=$(cat "$MOD_HASH_FILE")
+        [[ "$current_hash" != "$stored_hash" ]]
+    else
+        return 0
+    fi
+}
+
+record_mod_hash() {
+    # Write the current install.txt hash to MOD_HASH_FILE.
+    local install_file="${MODS_DIR}/install.txt"
+    [[ -f "$install_file" ]] || return 0
+    sha256sum "$install_file" | awk '{print $1}' > "$MOD_HASH_FILE"
+}
+
 # Skip running main() when sourced for testing.
 if [[ "${TML_WRAPPER_TEST_MODE:-0}" == "1" ]]; then
+    set +e  # prevent errexit from propagating into the test shell
     return 0 2>/dev/null || true
 fi
