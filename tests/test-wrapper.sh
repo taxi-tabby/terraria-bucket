@@ -178,32 +178,42 @@ PRELOAD_DIR="$TMP_SEED_PRELOAD" WORLDS_DIR="$TMP_SEED_WORLDS" WORLD_NAME="$saved
 [[ -f "$TMP_SEED_WORLDS/existing.wld" ]]
 assert_eq "0" "$?" "existing world preserved"
 
-echo "Test: seed_world_from_preload skips silently when preload zip missing"
+echo "Test: seed_world_from_preload skips silently when preload Map dir missing"
 rm -f "$TMP_SEED_WORLDS/existing.wld"
 PRELOAD_DIR="$TMP_SEED_PRELOAD" WORLDS_DIR="$TMP_SEED_WORLDS" WORLD_NAME=untitled \
     seed_world_from_preload > /dev/null
 rc=$?
-assert_eq "0" "$rc" "missing zip returns 0"
+assert_eq "0" "$rc" "missing Map dir returns 0"
 
-# Only run the extraction test if `zip` is available (not on all systems).
-if command -v zip > /dev/null; then
-    echo "Test: seed_world_from_preload extracts direct .wld and renames WORLD_NAME"
-    mkdir -p "$TMP_SEED_PRELOAD/Map"
-    seed_zip_tmp=$(mktemp -d)
-    echo "fake-wld-content" > "$seed_zip_tmp/MyWorld.wld"
-    echo "fake-twld-content" > "$seed_zip_tmp/MyWorld.twld"
-    (cd "$seed_zip_tmp" && zip -q "$TMP_SEED_PRELOAD/Map/Terraria.zip" MyWorld.wld MyWorld.twld)
-    rm -rf "$seed_zip_tmp"
-    WORLD_NAME=untitled
-    PRELOAD_DIR="$TMP_SEED_PRELOAD" WORLDS_DIR="$TMP_SEED_WORLDS" \
-        seed_world_from_preload > /dev/null
-    [[ -f "$TMP_SEED_WORLDS/MyWorld.wld" ]]
-    assert_eq "0" "$?" ".wld extracted"
-    [[ -f "$TMP_SEED_WORLDS/MyWorld.twld" ]]
-    assert_eq "0" "$?" ".twld extracted"
-    # Note: WORLD_NAME update happens in the subshell of $(...) when source-test;
-    # not asserting on the variable directly here — verified via integration.
-fi
+echo "Test: seed_world_from_preload skips when Map dir has no .wld"
+mkdir -p "$TMP_SEED_PRELOAD/Map"
+PRELOAD_DIR="$TMP_SEED_PRELOAD" WORLDS_DIR="$TMP_SEED_WORLDS" WORLD_NAME=untitled \
+    seed_world_from_preload > /dev/null
+[[ ! -f "$TMP_SEED_WORLDS/anything.wld" ]]
+assert_eq "0" "$?" "empty Map dir produces no seed"
+
+echo "Test: seed_world_from_preload copies .wld + matching .twld to volume"
+echo "fake-wld" > "$TMP_SEED_PRELOAD/Map/MyWorld.wld"
+echo "fake-twld" > "$TMP_SEED_PRELOAD/Map/MyWorld.twld"
+PRELOAD_DIR="$TMP_SEED_PRELOAD" WORLDS_DIR="$TMP_SEED_WORLDS" WORLD_NAME=untitled \
+    seed_world_from_preload > /dev/null
+[[ -f "$TMP_SEED_WORLDS/MyWorld.wld" ]]; assert_eq "0" "$?" ".wld copied"
+[[ -f "$TMP_SEED_WORLDS/MyWorld.twld" ]]; assert_eq "0" "$?" ".twld copied"
+
+echo "Test: seed_world_from_preload updates WORLD_NAME when exactly one .wld is seeded"
+rm -f "$TMP_SEED_WORLDS"/*.wld "$TMP_SEED_WORLDS"/*.twld
+WORLD_NAME=untitled
+PRELOAD_DIR="$TMP_SEED_PRELOAD" WORLDS_DIR="$TMP_SEED_WORLDS" \
+    seed_world_from_preload > /dev/null
+assert_eq "MyWorld" "$WORLD_NAME" "WORLD_NAME points at the single seeded world"
+
+echo "Test: seed_world_from_preload tolerates .wld without paired .twld"
+rm -f "$TMP_SEED_WORLDS"/*.wld "$TMP_SEED_WORLDS"/*.twld
+rm -f "$TMP_SEED_PRELOAD/Map"/*.twld
+WORLD_NAME=untitled
+PRELOAD_DIR="$TMP_SEED_PRELOAD" WORLDS_DIR="$TMP_SEED_WORLDS" \
+    seed_world_from_preload > /dev/null
+[[ -f "$TMP_SEED_WORLDS/MyWorld.wld" ]]; assert_eq "0" "$?" ".wld still copied when .twld is absent"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
